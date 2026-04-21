@@ -17,7 +17,7 @@ Bio: ${data.bio}
 Public Repos: ${data.repoCount}
 
 Top Repositories:
-${data.repos.join(", ")}
+${reposDetailed.join("\n")}
 
 Give:
 - strengths
@@ -38,6 +38,21 @@ Focus on:
 - Projects
 - Visibility
 `,
+
+
+  weekly: (data) => `
+Analyze weekly GitHub activity:
+
+Username: ${data.username}
+Repos: ${data.repos.join(", ")}
+
+Give:
+- Weekly summary
+- Productivity insights
+- Suggestions
+
+Keep it short and markdown formatted.
+`,
 };
 
 // 🚀 MAIN ROUTE
@@ -51,8 +66,15 @@ app.post("/route", async (req, res) => {
     );
 
     const repoRes = await axios.get(
-      `https://api.github.com/users/${username}/repos?per_page=10&sort=updated`
+      `https://api.github.com/users/${username}/repos?per_page=5&sort=updated`
     );
+
+    const reposDetailed = repoRes.data.map((r) => `
+    Name: ${r.name}
+    Stars: ${r.stargazers_count}
+    Language: ${r.language}
+    Description: ${r.description}
+    `);
 
     const data = {
       username,
