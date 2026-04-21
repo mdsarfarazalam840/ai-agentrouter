@@ -53,6 +53,18 @@ Give:
 
 Keep it short and markdown formatted.
 `,
+
+
+  optimize: (data) => `
+Optimize this GitHub profile:
+${data.username}
+`,
+
+debug: (data) => `
+Find problems in repositories:
+${data.repos.join(", ")}
+`,
+
 };
 
 // 🚀 MAIN ROUTE
