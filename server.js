@@ -84,7 +84,7 @@ ${data.repos.join(", ")}
 
 };
 
-
+// #🚀 Webhook Route
 app.post("/webhook", async (req, res) => {
   try {
     if (!verifySignature(req)) {
@@ -121,6 +121,8 @@ app.post("/webhook", async (req, res) => {
           headers: {
             Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
             "Content-Type": "application/json",
+            "HTTP-Referer": "https://github.com",
+            "X-Title": "github-ai-bot"
           },
           body: JSON.stringify({
             model: "mistralai/mistral-7b-instruct",
@@ -217,6 +219,8 @@ app.post("/route", async (req, res) => {
     return res.send("⚠️ OpenRouter API Error");
   }
 
+  console.log("Prompt sent to AI:", prompt);
+
     const aiData = await aiRes.json();
 
     // 🔥 DEBUG LOG
@@ -226,6 +230,17 @@ app.post("/route", async (req, res) => {
       return res.send("⚠️ AI Error: " + (aiData.error?.message || "No response from model"));
     }
 
+    // 🔥 DEBUG FULL RESPONSE
+    console.log("AI RESPONSE:", JSON.stringify(aiData, null, 2));
+
+    // ❌ handle error safely
+    if (!aiData.choices || !aiData.choices[0]) {
+      return res.send(
+        "⚠️ AI Error: " + (aiData.error?.message || "No response from model")
+      );
+    }
+
+    // ✅ safe access
     res.send(aiData.choices[0].message.content);
   } catch (error) {
     console.error(error);
