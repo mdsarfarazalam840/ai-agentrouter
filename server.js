@@ -154,9 +154,20 @@ app.post("/webhook", async (req, res) => {
                 {
                   role: "user",
                   content: `
-You are a senior software engineer.
+                    You are a senior software engineer.
 
-Return ONLY JSON:
+                    Return ONLY valid JSON.
+
+                    DO NOT add explanation.
+                    DO NOT add text before or after JSON.
+                    DO NOT use markdown.
+                    ONLY return JSON object.
+
+                    Example:
+                    {
+                      "summary": "...",
+                      "issues": [...]
+                    }
 
 {
   "summary": "short summary",
@@ -186,12 +197,18 @@ ${diff.slice(0, 15000)}
 
         if (!content) continue;
 
-        parsed = JSON.parse(content);
-        console.log("✅ Parsed from:", model);
-        break;
+        const jsonMatch = content.match(/\{[\s\S]*\}/);
 
-      } catch (err) {
-        console.log("❌ Model failed:", model);
+        if (jsonMatch) {
+          console.log("🧠 RAW AI RESPONSE:", content);
+          parsed = JSON.parse(jsonMatch[0]);
+          console.log("✅ JSON parsed");
+        } else {
+          console.log("❌ No JSON found in response");
+        }
+
+      } catch (e) {
+        console.log("❌ JSON parse failed:", e.message);
       }
     }
 
