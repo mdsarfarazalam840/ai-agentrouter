@@ -293,6 +293,8 @@ app.post("/route", async (req, res) => {
       }
     );
 
+
+    
     if (!aiRes.ok) {
     const text = await aiRes.text();
     console.error("OpenRouter Error:", text);
