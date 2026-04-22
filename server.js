@@ -108,7 +108,6 @@ app.post("/webhook", async (req, res) => {
     console.log("Repo:", repo?.name);
     console.log("PR:", pr?.number);
 
-    // 🔐 Auth
     const octokit = new Octokit({
       authStrategy: createAppAuth,
       auth: {
@@ -118,47 +117,46 @@ app.post("/webhook", async (req, res) => {
       },
     });
 
-    // 📥 Get diff safely
+    // 📥 Get diff
     let diff = "No diff available";
     try {
       diff = await fetch(pr.diff_url).then((r) => r.text());
-    } catch (e) {
+    } catch {
       console.log("⚠️ Diff fetch failed");
     }
-// 🤖 Call AI (STRUCTURED OUTPUT)
-let parsed = null;
 
-const models = [
-  "openrouter/auto",
-  "openchat/openchat-7b",
-  "meta-llama/llama-3-8b-instruct"
-];
+    // 🤖 AI with retry
+    let parsed = null;
 
-for (let i = 0; i < models.length; i++) {
-  try {
-    console.log(`🤖 Trying model: ${models[i]}`);
+    const models = [
+      "openrouter/auto",
+      "openchat/openchat-7b",
+      "meta-llama/llama-3-8b-instruct"
+    ];
 
-    const trimmedDiff = diff.slice(0, 15000);
+    for (let model of models) {
+      try {
+        console.log("🤖 Trying:", model);
 
-    const aiRes = await fetch(
-      "https://openrouter.ai/api/v1/chat/completions",
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
-          "Content-Type": "application/json",
-          "HTTP-Referer": "https://github.com",
-          "X-Title": "github-ai-bot",
-        },
-        body: JSON.stringify({
-          model: models[i],
-          messages: [
-            {
-              role: "user",
-              content: `
-You are a senior software engineer doing a code review.
+        const aiRes = await fetch(
+          "https://openrouter.ai/api/v1/chat/completions",
+          {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+              "Content-Type": "application/json",
+              "HTTP-Referer": "https://github.com",
+              "X-Title": "github-ai-bot",
+            },
+            body: JSON.stringify({
+              model,
+              messages: [
+                {
+                  role: "user",
+                  content: `
+You are a senior software engineer.
 
-Return ONLY JSON in this format:
+Return ONLY JSON:
 
 {
   "summary": "short summary",
@@ -167,87 +165,136 @@ Return ONLY JSON in this format:
       "file": "filename",
       "line": 10,
       "severity": "high | medium | low",
-      "comment": "what is wrong",
-      "suggestion": "how to fix"
+      "comment": "issue",
+      "suggestion": "fix"
     }
   ]
 }
 
 PR DIFF:
-${trimmedDiff}
-              `,
-            },
-          ],
-          max_tokens: 500,
-        }),
+${diff.slice(0, 15000)}
+                  `,
+                },
+              ],
+              max_tokens: 500,
+            }),
+          }
+        );
+
+        const aiData = await aiRes.json();
+        const content = aiData?.choices?.[0]?.message?.content;
+
+        if (!content) continue;
+
+        parsed = JSON.parse(content);
+        console.log("✅ Parsed from:", model);
+        break;
+
+      } catch (err) {
+        console.log("❌ Model failed:", model);
       }
-    );
-
-    const aiData = await aiRes.json();
-
-    const content = aiData?.choices?.[0]?.message?.content;
-
-    if (!content) {
-      console.log("⚠️ No content from model:", models[i]);
-      continue; // try next model
     }
 
-    try {
-      parsed = JSON.parse(content);
-      console.log("✅ Parsed successfully from:", models[i]);
-      break; // ✅ STOP when success
-    } catch (e) {
-      console.log("❌ JSON parse failed for:", models[i]);
+    // 🧠 Severity detection (FIXED POSITION)
+    let hasHigh = false;
+    let hasMedium = false;
+
+    if (parsed && parsed.issues?.length) {
+      for (const issue of parsed.issues) {
+        if (issue.severity === "high") hasHigh = true;
+        if (issue.severity === "medium") hasMedium = true;
+      }
     }
 
-  } catch (err) {
-    console.log(`❌ Model failed: ${models[i]}`, err.message);
-  }
-}
+    // 💬 Inline comments
+    if (parsed?.issues?.length) {
+      for (const issue of parsed.issues) {
+        try {
+          await octokit.pulls.createReviewComment({
+            owner: repo.owner.login,
+            repo: repo.name,
+            pull_number: pr.number,
+            body: `⚠️ **${issue.severity.toUpperCase()} ISSUE**\n\n${issue.comment}\n\n💡 Fix: ${issue.suggestion}`,
+            commit_id: pr.head.sha,
+            path: issue.file,
+            line: issue.line,
+          });
+        } catch (err) {
+          console.log("Inline comment failed:", err.message);
+        }
+      }
+    }
 
-    // 💬 Always comment (even if AI fails)
-if (parsed && parsed.issues?.length) {
-  for (const issue of parsed.issues) {
+    // 🏷 Labels
     try {
-      await octokit.pulls.createReviewComment({
+      if (hasHigh) {
+        await octokit.issues.addLabels({
+          owner: repo.owner.login,
+          repo: repo.name,
+          issue_number: pr.number,
+          labels: ["🚨 high-risk", "needs-fix"],
+        });
+      } else if (hasMedium) {
+        await octokit.issues.addLabels({
+          owner: repo.owner.login,
+          repo: repo.name,
+          issue_number: pr.number,
+          labels: ["⚠️ needs-review"],
+        });
+      } else {
+        await octokit.issues.addLabels({
+          owner: repo.owner.login,
+          repo: repo.name,
+          issue_number: pr.number,
+          labels: ["✅ safe"],
+        });
+      }
+    } catch (err) {
+      console.log("Label error:", err.message);
+    }
+
+    // 🔴 Block PR (status check)
+    try {
+      await octokit.repos.createCommitStatus({
         owner: repo.owner.login,
         repo: repo.name,
-        pull_number: pr.number,
-        body: `⚠️ **${issue.severity.toUpperCase()} ISSUE**\n\n${issue.comment}\n\n💡 Fix: ${issue.suggestion}`,
-        commit_id: pr.head.sha,
-        path: issue.file,
-        line: issue.line,
+        sha: pr.head.sha,
+        state: hasHigh ? "failure" : "success",
+        context: "AI Code Review",
+        description: hasHigh
+          ? "❌ High severity issues found"
+          : "✅ No critical issues",
       });
     } catch (err) {
-      console.log("Inline comment failed:", err.message);
+      console.log("Status error:", err.message);
     }
-  }
-}
 
-  // 📌 Summary Comment
-  await octokit.issues.createComment({
-    owner: repo.owner.login,
-    repo: repo.name,
-    issue_number: pr.number,
-    body: `## 🤖 AI PR Review
+    // 📌 Summary comment
+    await octokit.issues.createComment({
+      owner: repo.owner.login,
+      repo: repo.name,
+      issue_number: pr.number,
+      body: `## 🤖 AI PR Review
 
-  ### 📌 Summary
-  ${parsed?.summary || "No summary available"}
+### 📌 Summary
+${parsed?.summary || "No summary available"}
 
-  ### 🧠 Issues Found
-  ${parsed?.issues?.length || 0}
+### 🧠 Issues Found
+${parsed?.issues?.length || 0}
 
-  > Generated by AI Reviewer 🚀
-  `,
-  });
+### 🚦 Status
+${hasHigh ? "❌ BLOCKED" : "✅ SAFE"}
 
-    console.log("✅ Comment posted");
+> Generated by AI Reviewer 🚀
+`,
+    });
 
-    return res.status(200).send("OK"); // 🔥 VERY IMPORTANT
+    console.log("✅ Done");
+
+    return res.status(200).send("OK");
+
   } catch (err) {
     console.error("❌ Webhook crash:", err);
-
-    // 🔥 NEVER FAIL WEBHOOK
     return res.status(200).send("Error handled");
   }
 });
