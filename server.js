@@ -87,42 +87,58 @@ ${data.repos.join(", ")}
 // #🚀 Webhook Route
 app.post("/webhook", async (req, res) => {
   try {
-    if (!verifySignature(req)) {
-      return res.status(401).send("Invalid signature");
-    }
+    console.log("🔥 Webhook received");
 
     const event = req.headers["x-github-event"];
 
-    if (event === "pull_request") {
-      const action = req.body.action;
+    if (event !== "pull_request") {
+      return res.status(200).send("Ignored");
+    }
 
-      if (action === "opened" || action === "synchronize") {
-        const pr = req.body.pull_request;
-        const repo = req.body.repository;
+    const action = req.body.action;
 
-        const installationId = req.body.installation.id;
+    if (action !== "opened" && action !== "synchronize") {
+      return res.status(200).send("Ignored action");
+    }
 
-        // 🔐 Auth
-        const octokit = new Octokit({
-          authStrategy: createAppAuth,
-          auth: {
-            appId: APP_ID,
-            privateKey: PRIVATE_KEY,
-            installationId: installationId,
-          },
-        });
+    const pr = req.body.pull_request;
+    const repo = req.body.repository;
+    const installationId = req.body.installation?.id;
 
-        // 📥 Get PR diff
-        const diff = await fetch(pr.diff_url).then(r => r.text());
+    console.log("Repo:", repo?.name);
+    console.log("PR:", pr?.number);
 
-        // 🤖 Call your AI
-        const aiRes = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    // 🔐 Auth
+    const octokit = new Octokit({
+      authStrategy: createAppAuth,
+      auth: {
+        appId: process.env.APP_ID,
+        privateKey: process.env.PRIVATE_KEY,
+        installationId: installationId,
+      },
+    });
+
+    // 📥 Get diff safely
+    let diff = "No diff available";
+    try {
+      diff = await fetch(pr.diff_url).then((r) => r.text());
+    } catch (e) {
+      console.log("⚠️ Diff fetch failed");
+    }
+
+    // 🤖 Call AI safely
+    let review = "⚠️ AI failed";
+
+    try {
+      const aiRes = await fetch(
+        "https://openrouter.ai/api/v1/chat/completions",
+        {
           method: "POST",
           headers: {
             Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
             "Content-Type": "application/json",
             "HTTP-Referer": "https://github.com",
-            "X-Title": "github-ai-bot"
+            "X-Title": "github-ai-bot",
           },
           body: JSON.stringify({
             model: "mistralai/mistral-7b-instruct",
@@ -132,26 +148,38 @@ app.post("/webhook", async (req, res) => {
                 content: `Review this PR:\n${diff}`,
               },
             ],
+            max_tokens: 300,
           }),
-        });
+        }
+      );
 
-        const aiData = await aiRes.json();
-        const review = aiData.choices[0].message.content;
+      const aiData = await aiRes.json();
 
-        // 💬 Comment on PR
-        await octokit.issues.createComment({
-          owner: repo.owner.login,
-          repo: repo.name,
-          issue_number: pr.number,
-          body: review,
-        });
+      if (aiData?.choices?.[0]?.message?.content) {
+        review = aiData.choices[0].message.content;
+      } else {
+        review = "⚠️ AI Error: " + (aiData.error?.message || "No response");
       }
+    } catch (err) {
+      console.log("❌ AI crashed:", err);
     }
 
-    res.send("OK");
+    // 💬 Always comment (even if AI fails)
+    await octokit.issues.createComment({
+      owner: repo.owner.login,
+      repo: repo.name,
+      issue_number: pr.number,
+      body: review,
+    });
+
+    console.log("✅ Comment posted");
+
+    return res.status(200).send("OK"); // 🔥 VERY IMPORTANT
   } catch (err) {
-    console.error(err);
-    res.status(500).send("Error");
+    console.error("❌ Webhook crash:", err);
+
+    // 🔥 NEVER FAIL WEBHOOK
+    return res.status(200).send("Error handled");
   }
 });
 
