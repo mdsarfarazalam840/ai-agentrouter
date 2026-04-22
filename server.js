@@ -128,25 +128,34 @@ app.post("/webhook", async (req, res) => {
 // 🤖 Call AI (STRUCTURED OUTPUT)
 let parsed = null;
 
-try {
-  const trimmedDiff = diff.slice(0, 15000);
+const models = [
+  "openrouter/auto",
+  "openchat/openchat-7b",
+  "meta-llama/llama-3-8b-instruct"
+];
 
-  const aiRes = await fetch(
-    "https://openrouter.ai/api/v1/chat/completions",
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
-        "Content-Type": "application/json",
-        "HTTP-Referer": "https://github.com",
-        "X-Title": "github-ai-bot",
-      },
-      body: JSON.stringify({
-        model: "openrouter/auto",
-        messages: [
-          {
-            role: "user",
-            content: `
+for (let i = 0; i < models.length; i++) {
+  try {
+    console.log(`🤖 Trying model: ${models[i]}`);
+
+    const trimmedDiff = diff.slice(0, 15000);
+
+    const aiRes = await fetch(
+      "https://openrouter.ai/api/v1/chat/completions",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+          "Content-Type": "application/json",
+          "HTTP-Referer": "https://github.com",
+          "X-Title": "github-ai-bot",
+        },
+        body: JSON.stringify({
+          model: models[i],
+          messages: [
+            {
+              role: "user",
+              content: `
 You are a senior software engineer doing a code review.
 
 Return ONLY JSON in this format:
@@ -166,26 +175,34 @@ Return ONLY JSON in this format:
 
 PR DIFF:
 ${trimmedDiff}
-            `,
-          },
-        ],
-        max_tokens: 500,
-      }),
+              `,
+            },
+          ],
+          max_tokens: 500,
+        }),
+      }
+    );
+
+    const aiData = await aiRes.json();
+
+    const content = aiData?.choices?.[0]?.message?.content;
+
+    if (!content) {
+      console.log("⚠️ No content from model:", models[i]);
+      continue; // try next model
     }
-  );
 
-  const aiData = await aiRes.json();
+    try {
+      parsed = JSON.parse(content);
+      console.log("✅ Parsed successfully from:", models[i]);
+      break; // ✅ STOP when success
+    } catch (e) {
+      console.log("❌ JSON parse failed for:", models[i]);
+    }
 
-  const content = aiData?.choices?.[0]?.message?.content;
-
-  try {
-    parsed = JSON.parse(content);
-  } catch (e) {
-    console.log("❌ JSON parse failed");
+  } catch (err) {
+    console.log(`❌ Model failed: ${models[i]}`, err.message);
   }
-
-} catch (err) {
-  console.log("❌ AI crashed:", err);
 }
 
     // 💬 Always comment (even if AI fails)
@@ -294,7 +311,7 @@ app.post("/route", async (req, res) => {
     );
 
 
-    
+
     if (!aiRes.ok) {
     const text = await aiRes.text();
     console.error("OpenRouter Error:", text);
