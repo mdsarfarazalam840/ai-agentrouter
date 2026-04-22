@@ -219,6 +219,7 @@ app.post("/route", async (req, res) => {
     return res.send("⚠️ OpenRouter API Error");
   }
 
+  // 🔥 DEBUG LOG
   console.log("Prompt sent to AI:", prompt);
 
     const aiData = await aiRes.json();
