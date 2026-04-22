@@ -126,7 +126,7 @@ app.post("/webhook", async (req, res) => {
       console.log("⚠️ Diff fetch failed");
     }
 
-    // 🤖 Call AI safely
+    // 🤖 Call AI 
     let review = "⚠️ AI failed";
 
     try {
