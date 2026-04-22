@@ -1,6 +1,23 @@
 import express from "express";
 import dotenv from "dotenv";
 import axios from "axios";
+import { Octokit } from "@octokit/rest";
+import { createAppAuth } from "@octokit/auth-app";
+import crypto from "crypto";
+import fs from "fs";
+
+const APP_ID = process.env.APP_ID;
+const PRIVATE_KEY = process.env.PRIVATE_KEY;
+const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET;
+
+
+// 🔐 Verify webhook
+function verifySignature(req) {
+  const signature = req.headers["x-hub-signature-256"];
+  const hmac = crypto.createHmac("sha256", WEBHOOK_SECRET);
+  const digest = "sha256=" + hmac.update(JSON.stringify(req.body)).digest("hex");
+  return signature === digest;
+}
 
 dotenv.config();
 
@@ -66,6 +83,76 @@ ${data.repos.join(", ")}
 `,
 
 };
+
+
+app.post("/webhook", async (req, res) => {
+  try {
+    if (!verifySignature(req)) {
+      return res.status(401).send("Invalid signature");
+    }
+
+    const event = req.headers["x-github-event"];
+
+    if (event === "pull_request") {
+      const action = req.body.action;
+
+      if (action === "opened" || action === "synchronize") {
+        const pr = req.body.pull_request;
+        const repo = req.body.repository;
+
+        const installationId = req.body.installation.id;
+
+        // 🔐 Auth
+        const octokit = new Octokit({
+          authStrategy: createAppAuth,
+          auth: {
+            appId: APP_ID,
+            privateKey: PRIVATE_KEY,
+            installationId: installationId,
+          },
+        });
+
+        // 📥 Get PR diff
+        const diff = await fetch(pr.diff_url).then(r => r.text());
+
+        // 🤖 Call your AI
+        const aiRes = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            model: "mistralai/mistral-7b-instruct",
+            messages: [
+              {
+                role: "user",
+                content: `Review this PR:\n${diff}`,
+              },
+            ],
+          }),
+        });
+
+        const aiData = await aiRes.json();
+        const review = aiData.choices[0].message.content;
+
+        // 💬 Comment on PR
+        await octokit.issues.createComment({
+          owner: repo.owner.login,
+          repo: repo.name,
+          issue_number: pr.number,
+          body: review,
+        });
+      }
+    }
+
+    res.send("OK");
+  } catch (err) {
+    console.error(err);
+    res.status(500).send("Error");
+  }
+});
+
 
 // 🚀 MAIN ROUTE
 app.post("/route", async (req, res) => {
