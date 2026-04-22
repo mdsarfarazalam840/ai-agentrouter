@@ -17,7 +17,7 @@ Bio: ${data.bio}
 Public Repos: ${data.repoCount}
 
 Top Repositories:
-${reposDetailed.join("\n")}
+${data.reposDetailed.join("\n")}
 
 Give:
 - strengths
@@ -93,6 +93,7 @@ app.post("/route", async (req, res) => {
       bio: userRes.data.bio || "No bio",
       repoCount: userRes.data.public_repos,
       repos: repoRes.data.map((r) => r.name),
+      reposDetailed,
     };
 
     // 🧠 Select agent
@@ -107,6 +108,8 @@ app.post("/route", async (req, res) => {
         headers: {
           Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
           "Content-Type": "application/json",
+          "HTTP-Referer": "https://github.com",
+          "X-Title": "github-ai-bot"
         },
         body: JSON.stringify({
           model: "openrouter/auto",
@@ -121,9 +124,21 @@ app.post("/route", async (req, res) => {
       }
     );
 
+    if (!aiRes.ok) {
+    const text = await aiRes.text();
+    console.error("OpenRouter Error:", text);
+    return res.send("⚠️ OpenRouter API Error");
+  }
+
     const aiData = await aiRes.json();
 
-    // ✅ Return AI output
+    // 🔥 DEBUG LOG
+    console.log("AI RESPONSE:", JSON.stringify(aiData, null, 2));
+
+    if (!aiData.choices || !aiData.choices[0]) {
+      return res.send("⚠️ AI Error: " + (aiData.error?.message || "No response from model"));
+    }
+
     res.send(aiData.choices[0].message.content);
   } catch (error) {
     console.error(error);
