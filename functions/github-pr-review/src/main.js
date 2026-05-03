@@ -9,7 +9,7 @@ import {
   getHeader,
   verifyWebhookSignature,
 } from "../../../shared/lib/github.js";
-import { buildPrReviewPrompt } from "../../../shared/lib/prompts.js";
+import { buildPrReviewPrompt, buildIssuePrompt, buildPrCommandPrompt, } from "../../../shared/lib/prompts.js";
 import { normalizeReview, parseReviewJson } from "../../../shared/lib/parser.js";
 
 function parseRequestBody(req, logger) {
@@ -121,7 +121,23 @@ async function handleIssueComment({ body, res, log, error }) {
     return res.text("Ignored bot comment");
   }
 
-  if (!comment.body?.trim().includes("/analyze")) {
+  const command = comment.body?.trim().split(/\s+/)[0]?.toLowerCase();
+
+  const supportedCommands = [
+    "/analyze",
+    "/root-cause",
+    "/fix",
+    "/test-cases",
+    "/summarize",
+    "/priority",
+    "/labels",
+    "/security",
+    "/duplicate",
+    "/estimate",
+    "/owner",
+  ];
+
+  if (!supportedCommands.includes(command)) {
     return res.text("Ignored comment");
   }
 
@@ -131,23 +147,12 @@ async function handleIssueComment({ body, res, log, error }) {
 
   try {
     content = await callLLM(
-      [
-        {
-          role: "user",
-          content: `Analyze this GitHub issue and provide engineering guidance.
-
-Title: ${issue.title}
-
-Body:
-${issue.body || "No description provided."}
-
-Return markdown with:
-- Summary
-- Root Cause
-- Recommended Fix
-- Next Steps`,
-        },
-      ],
+  [
+    {
+      role: "user",
+      content: buildIssuePrompt(command, issue),
+    },
+  ],
       {
         temperature: 0.2,
         top_p: 0.8,
@@ -166,7 +171,7 @@ Return markdown with:
     owner: repo.owner.login,
     repo: repo.name,
     issue_number: issue.number,
-    body: `## 🤖 AI Issue Analysis\n\n${content}`,
+    body: `## 🤖 AI ${command.replace("/", "").replace("-", " ").toUpperCase()}\n\n${content}`,
   });
 
   return res.text("OK");
@@ -279,6 +284,75 @@ async function handlePullRequest({ body, req, res, log, error }) {
   return res.text("OK");
 }
 
+async function handlePullRequestComment({ body, res, log, error }) {
+  const comment = body.comment;
+  const pr = body.issue;
+  const repo = body.repository;
+  const installationId = body.installation?.id;
+
+  if (!comment || !pr?.pull_request || !repo || !installationId) {
+    return res.text("Invalid payload", 400);
+  }
+
+  if (comment.user?.type === "Bot") {
+    return res.text("Ignored bot comment");
+  }
+
+  const command = comment.body?.trim().split(/\s+/)[0]?.toLowerCase();
+
+  const supportedPrCommands = [
+    "/review",
+    "/risks",
+    "/perf",
+    "/security",
+    "/refactor",
+    "/tests",
+    "/release-notes",
+  ];
+
+  if (!supportedPrCommands.includes(command)) {
+    return res.text("Ignored comment");
+  }
+
+  const octokit = createGitHubClient(installationId);
+
+  const prData = await octokit.pulls.get({
+    owner: repo.owner.login,
+    repo: repo.name,
+    pull_number: pr.number,
+  });
+
+  const diff = await fetchPrDiff(prData.data);
+
+  let content = "AI PR analysis unavailable.";
+
+  try {
+    content = await callLLM(
+      [{ role: "user", content: buildPrCommandPrompt(command, diff) }],
+      {
+        temperature: 0.2,
+        top_p: 0.8,
+        max_tokens: 700,
+        enableThinking: false,
+        providerTimeoutMs: 45000,
+        errorLogger: error,
+        task: "pr_review",
+      }
+    );
+  } catch {
+    error("PR comment AI review unavailable");
+  }
+
+  await octokit.issues.createComment({
+    owner: repo.owner.login,
+    repo: repo.name,
+    issue_number: pr.number,
+    body: `## 🤖 AI ${command.replace("/", "").replace("-", " ").toUpperCase()}\n\n${content}`,
+  });
+
+  return res.text("OK");
+}
+
 export default async ({ req, res, log, error }) => {
   try {
     log("Webhook received");
@@ -300,6 +374,10 @@ export default async ({ req, res, log, error }) => {
     }
 
     if (event === "issue_comment") {
+      if (body.issue?.pull_request) {
+        return await handlePullRequestComment({ body, res, log, error });
+      }
+
       return await handleIssueComment({ body, res, log, error });
     }
 

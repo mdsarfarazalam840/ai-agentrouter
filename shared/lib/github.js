@@ -72,6 +72,10 @@ export async function fetchPrDiff(pr) {
   return response.text();
 }
 
+export function formatCommandTitle(command) {
+  return command.replace("/", "").replace(/-/g, " ").toUpperCase();
+}
+
 function formatReviewComment(issue) {
   return `🚨 **${String(issue.severity || "low").toUpperCase()} | ${String(issue.type || "best-practice").toUpperCase()}**
 

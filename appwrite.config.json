@@ -58,9 +58,26 @@
             "scopes": [
                 "users.read"
             ]
+        },
+        {
+            "$id": "69f76805000e6d129f17",
+            "name": "github-pr-reviewer",
+            "runtime": "node-25",
+            "path": "functions/github-pr-reviewer",
+            "entrypoint": "src/functions/github-pr-reviewer/main.js",
+            "execute": [
+                "any"
+            ],
+            "enabled": true,
+            "logging": true,
+            "events": [],
+            "schedule": "",
+            "timeout": 15,
+            "commands": "npm install",
+            "scopes": [],
+            "buildSpecification": "s-0.5vcpu-512mb",
+            "runtimeSpecification": "s-0.5vcpu-512mb",
+            "deploymentRetention": 0
         }
     ]
 }
-
-
-
