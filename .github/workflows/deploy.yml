@@ -71,12 +71,15 @@ jobs:
       - name: Configure Appwrite CLI
         run: |
             appwrite client \
-            --endpoint ${{ secrets.APPWRITE_ENDPOINT }} \
-            --project-id ${{ secrets.APPWRITE_PROJECT_ID }} \
-            --key ${{ secrets.APPWRITE_API_KEY }}
+            --endpoint "${{ secrets.APPWRITE_ENDPOINT }}" \
+            --project-id "${{ secrets.APPWRITE_PROJECT_ID }}" \
+            --key "${{ secrets.APPWRITE_API_KEY }}"
 
-      - name: Deploy github-profile-insights
-        run: appwrite functions create-deployment --function-id="${{ secrets.APPWRITE_PROFILE_FUNCTION_ID }}" --entrypoint="functions/github-profile-insights/src/main.js" --code="." --activate=true
+            appwrite functions create-deployment \
+            --function-id="${{ secrets.APPWRITE_PROFILE_FUNCTION_ID }}" \
+            --entrypoint="functions/github-profile-insights/src/main.js" \
+            --code="." \
+            --activate=true
 
   deploy-pr-reviewer:
     needs: build-test
@@ -92,12 +95,15 @@ jobs:
       - name: Setup Appwrite CLI
         run: npm install -g appwrite-cli
 
-      - name: Configure Appwrite CLI
+      - name: Configure Appwrite CLI & Deploy github-pr-reviewer
         run: |
             appwrite client \
-            --endpoint ${{ secrets.APPWRITE_ENDPOINT }} \
-            --project-id ${{ secrets.APPWRITE_PROJECT_ID }} \
-            --key ${{ secrets.APPWRITE_API_KEY }}
+            --endpoint "${{ secrets.APPWRITE_ENDPOINT }}" \
+            --project-id "${{ secrets.APPWRITE_PROJECT_ID }}" \
+            --key "${{ secrets.APPWRITE_API_KEY }}"
 
-      - name: Deploy github-pr-reviewer
-        run: appwrite functions create-deployment --function-id="${{ secrets.APPWRITE_PR_FUNCTION_ID }}" --entrypoint="functions/github-pr-review/src/main.js" --code="." --activate=true
+            appwrite functions create-deployment \
+            --function-id="${{ secrets.APPWRITE_PR_FUNCTION_ID }}" \
+            --entrypoint="functions/github-pr-review/src/main.js" \
+            --code="." \
+            --activate=true
