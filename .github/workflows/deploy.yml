@@ -1,0 +1,99 @@
+name: Deploy
+
+on:
+  push:
+    branches:
+      - master
+
+  workflow_dispatch:
+    inputs:
+      service:
+        description: "Select service to deploy"
+        required: true
+        default: "all"
+        type: choice
+        options:
+          - all
+          - github-profile-insights
+          - github-pr-reviewer
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    outputs:
+      deploy_service: ${{ steps.set-service.outputs.deploy_service }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build --if-present
+
+      - name: Test
+        run: npm test --if-present
+
+      - name: Resolve service
+        id: set-service
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "deploy_service=${{ github.event.inputs.service }}" >> $GITHUB_OUTPUT
+          else
+            echo "deploy_service=all" >> $GITHUB_OUTPUT
+          fi
+
+  deploy-profile:
+    needs: build-test
+    if: needs.build-test.outputs.deploy_service == 'all' || needs.build-test.outputs.deploy_service == 'github-profile-insights'
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Appwrite CLI
+        run: npm install -g appwrite-cli
+
+      - name: Deploy github-profile-insights
+        run: |
+          appwrite login --endpoint ${{ secrets.APPWRITE_ENDPOINT }} --key ${{ secrets.APPWRITE_API_KEY }}
+          appwrite functions createDeployment \
+            --functionId=${{ secrets.APPWRITE_PROFILE_FUNCTION_ID }} \
+            --entrypoint="src/main.js" \
+            --code="functions/github-profile-insights"
+
+  deploy-pr-reviewer:
+    needs: build-test
+    if: needs.build-test.outputs.deploy_service == 'all' || needs.build-test.outputs.deploy_service == 'github-pr-reviewer'
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Appwrite CLI
+        run: npm install -g appwrite-cli
+
+      - name: Deploy github-pr-reviewer
+        run: |
+          appwrite login --endpoint ${{ secrets.APPWRITE_ENDPOINT }} --key ${{ secrets.APPWRITE_API_KEY }}
+          appwrite functions createDeployment \
+            --functionId=${{ secrets.APPWRITE_PR_FUNCTION_ID }} \
+            --entrypoint="src/main.js" \
+            --code="functions/github-pr-reviewer"
