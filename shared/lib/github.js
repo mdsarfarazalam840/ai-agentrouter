@@ -2,27 +2,37 @@ import crypto from "crypto";
 import { Octokit } from "@octokit/rest";
 import { createAppAuth } from "@octokit/auth-app";
 
+
+
 export function getHeader(headers = {}, name) {
   const match = Object.keys(headers).find((key) => key.toLowerCase() === name.toLowerCase());
   return match ? headers[match] : undefined;
 }
 
+function getAppId() {
+  return process.env.GITHUB_APP_ID || process.env.APP_ID || "";
+}
+
 function getPrivateKey() {
-  return (process.env.PRIVATE_KEY || "").replace(/\\n/g, "\n");
+  return (process.env.GITHUB_PRIVATE_KEY || process.env.PRIVATE_KEY || "").replace(/\\n/g, "\n");
+}
+
+function getWebhookSecret() {
+  return process.env.GITHUB_WEBHOOK_SECRET || process.env.WEBHOOK_SECRET || "";
 }
 
 export function createGitHubClient(installationId) {
   return new Octokit({
     authStrategy: createAppAuth,
     auth: {
-      appId: process.env.APP_ID,
+      appId: getAppId(),
       privateKey: getPrivateKey(),
       installationId,
     },
   });
 }
 
-export function verifyWebhookSignature({ headers, bodyRaw, body, secret = process.env.WEBHOOK_SECRET }) {
+export function verifyWebhookSignature({ headers, bodyRaw, body, secret = getWebhookSecret() }) {
   if (!secret) return false;
 
   const signature = getHeader(headers, "x-hub-signature-256");
@@ -33,9 +43,9 @@ export function verifyWebhookSignature({ headers, bodyRaw, body, secret = proces
       ? bodyRaw
       : typeof body?.bodyText === "string"
         ? body.bodyText
-      : typeof body === "string"
-        ? body
-        : JSON.stringify(body || {});
+        : typeof body === "string"
+          ? body
+          : JSON.stringify(body || {});
 
   const digest = `sha256=${crypto.createHmac("sha256", secret).update(payload).digest("hex")}`;
   const digestBuffer = Buffer.from(digest);
@@ -60,6 +70,10 @@ export async function fetchPrDiff(pr) {
   }
 
   return response.text();
+}
+
+export function formatCommandTitle(command) {
+  return command.replace("/", "").replace(/-/g, " ").toUpperCase();
 }
 
 function formatReviewComment(issue) {
@@ -164,12 +178,87 @@ ${review.issues.map((issue) => `- ${issue.title} (${issue.severity})`).join("\n"
   });
 }
 
-export async function fetchGitHubProfile(username) {
+function buildPublicGitHubHeaders() {
+  const headers = {
+    Accept: "application/vnd.github+json",
+    "User-Agent": "appwrite-github-ai-agent",
+  };
+
+  if (process.env.GITHUB_TOKEN) {
+    headers.Authorization = `Bearer ${process.env.GITHUB_TOKEN}`;
+  }
+
+  return headers;
+}
+
+async function fetchGitHubJson(url, description) {
+  const response = await fetch(url, {
+    headers: buildPublicGitHubHeaders(),
+  });
+
+  if (!response.ok) {
+    throw new Error(`${description} failed with status ${response.status}`);
+  }
+
+  return response.json();
+}
+
+function parseRepository(repository, username) {
+  if (!repository) return null;
+
+  const [owner, repo] = repository.split("/");
+  if (!owner || !repo) return null;
+
+  return {
+    owner: owner.trim(),
+    repo: repo.trim(),
+    fullName: `${owner.trim()}/${repo.trim()}`,
+    username,
+  };
+}
+
+export async function fetchWeeklyRepoActivity(username) {
+  const headers = {
+    Accept: "application/vnd.github+json",
+    "User-Agent": "ai-agentrouter",
+  };
+
+  const reposRes = await fetch(`https://api.github.com/users/${username}/repos?per_page=10&sort=updated`, { headers });
+  const repos = await reposRes.json();
+
+  const weekAgo = new Date();
+  weekAgo.setDate(weekAgo.getDate() - 7);
+
+  const activity = await Promise.all(
+    repos.slice(0, 10).map(async (repo) => {
+      const [commitsRes, issuesRes, prsRes] = await Promise.all([
+        fetch(`https://api.github.com/repos/${username}/${repo.name}/commits?since=${weekAgo.toISOString()}`, { headers }),
+        fetch(`https://api.github.com/repos/${username}/${repo.name}/issues?since=${weekAgo.toISOString()}&state=all`, { headers }),
+        fetch(`https://api.github.com/repos/${username}/${repo.name}/pulls?state=all`, { headers }),
+      ]);
+
+      const commits = await commitsRes.json();
+      const issues = await issuesRes.json();
+      const prs = await prsRes.json();
+
+      return {
+        name: repo.name,
+        stars: repo.stargazers_count,
+        language: repo.language || "N/A",
+        pushed_at: repo.pushed_at,
+        commits: Array.isArray(commits) ? commits.length : 0,
+        issues: Array.isArray(issues) ? issues.filter(i => !i.pull_request).length : 0,
+        prs: Array.isArray(prs) ? prs.length : 0,
+      };
+    })
+  );
+
+  return activity.sort((a, b) => b.commits - a.commits);
+}
+
+export async function fetchGitHubProfile(username, options = {}) {
   const userResponse = await fetch(`https://api.github.com/users/${encodeURIComponent(username)}`, {
-    headers: {
-      Accept: "application/vnd.github+json",
-      "User-Agent": "appwrite-github-ai-agent",
-    },
+    headers: buildPublicGitHubHeaders(),
   });
 
   if (!userResponse.ok) {
@@ -179,10 +268,7 @@ export async function fetchGitHubProfile(username) {
   const repoResponse = await fetch(
     `https://api.github.com/users/${encodeURIComponent(username)}/repos?per_page=5&sort=updated`,
     {
-      headers: {
-        Accept: "application/vnd.github+json",
-        "User-Agent": "appwrite-github-ai-agent",
-      },
+      headers: buildPublicGitHubHeaders(),
     }
   );
 
@@ -192,11 +278,36 @@ export async function fetchGitHubProfile(username) {
 
   const user = await userResponse.json();
   const repos = await repoResponse.json();
+  let weekly = null;
+
+  if (options.repository) {
+    try {
+      weekly = await fetchWeeklyRepositoryActivity(options.repository, username);
+    } catch (err) {
+      weekly = {
+        error: err.message,
+        repo: {
+          fullName: options.repository,
+          description: "Weekly repository activity could not be fetched.",
+          stars: 0,
+          forks: 0,
+          openIssues: 0,
+          defaultBranch: "main",
+        },
+        since: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString(),
+        commits: [],
+        issues: [],
+        pulls: [],
+      };
+    }
+  }
   const reposDetailed = repos.map((repo) => `
     Name: ${repo.name}
     Stars: ${repo.stargazers_count}
     Language: ${repo.language}
     Description: ${repo.description}
+    Updated: ${repo.updated_at}
+    Pushed: ${repo.pushed_at}
     `);
 
   return {
@@ -205,5 +316,6 @@ export async function fetchGitHubProfile(username) {
     repoCount: user.public_repos,
     repos: repos.map((repo) => repo.name),
     reposDetailed,
+    weekly,
   };
 }
