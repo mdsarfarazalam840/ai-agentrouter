@@ -1,6 +1,6 @@
 import { callLLM } from "../../../shared/lib/llm.js";
-import { fetchGitHubProfile } from "../../../shared/lib/github.js";
 import { buildProfilePrompt } from "../../../shared/lib/prompts.js";
+import { fetchGitHubProfile, fetchWeeklyRepoActivity } from "../../../shared/lib/github.js";
 
 function parseRequestBody(req, logger) {
   const parseJson = (value) => {
@@ -111,17 +111,25 @@ export default async ({ req, res, log, error }) => {
       );
     }
 
-    const profile = await fetchGitHubProfile(username, { repository });
-    const prompt = buildProfilePrompt(task, profile);
+    let profile;
+    let prompt;
+
+    if (task === "weekly") {
+      const weeklyActivity = await fetchWeeklyRepoActivity(username);
+      prompt = buildProfilePrompt(task, { username, weeklyActivity });
+    } else {
+      profile = await fetchGitHubProfile(username);
+      prompt = buildProfilePrompt(task, profile);
+    }
 
     log(`Profile prompt generated for ${username} with task ${task}`);
 
     try {
       const maxTokensByTask = {
-        review: 180,
-        improve: 120,
+        review: 320,
+        improve: 220,
         optimize: 220,
-        weekly: 100,
+        weekly: 320,
         debug: 220,
         task,
       };

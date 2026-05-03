@@ -2,27 +2,37 @@ import crypto from "crypto";
 import { Octokit } from "@octokit/rest";
 import { createAppAuth } from "@octokit/auth-app";
 
+
+
 export function getHeader(headers = {}, name) {
   const match = Object.keys(headers).find((key) => key.toLowerCase() === name.toLowerCase());
   return match ? headers[match] : undefined;
 }
 
+function getAppId() {
+  return process.env.GITHUB_APP_ID || process.env.APP_ID || "";
+}
+
 function getPrivateKey() {
-  return (process.env.PRIVATE_KEY || "").replace(/\\n/g, "\n");
+  return (process.env.GITHUB_PRIVATE_KEY || process.env.PRIVATE_KEY || "").replace(/\\n/g, "\n");
+}
+
+function getWebhookSecret() {
+  return process.env.GITHUB_WEBHOOK_SECRET || process.env.WEBHOOK_SECRET || "";
 }
 
 export function createGitHubClient(installationId) {
   return new Octokit({
     authStrategy: createAppAuth,
     auth: {
-      appId: process.env.APP_ID,
+      appId: getAppId(),
       privateKey: getPrivateKey(),
       installationId,
     },
   });
 }
 
-export function verifyWebhookSignature({ headers, bodyRaw, body, secret = process.env.WEBHOOK_SECRET }) {
+export function verifyWebhookSignature({ headers, bodyRaw, body, secret = getWebhookSecret() }) {
   if (!secret) return false;
 
   const signature = getHeader(headers, "x-hub-signature-256");
@@ -33,9 +43,9 @@ export function verifyWebhookSignature({ headers, bodyRaw, body, secret = proces
       ? bodyRaw
       : typeof body?.bodyText === "string"
         ? body.bodyText
-      : typeof body === "string"
-        ? body
-        : JSON.stringify(body || {});
+        : typeof body === "string"
+          ? body
+          : JSON.stringify(body || {});
 
   const digest = `sha256=${crypto.createHmac("sha256", secret).update(payload).digest("hex")}`;
   const digestBuffer = Buffer.from(digest);
@@ -203,56 +213,43 @@ function parseRepository(repository, username) {
   };
 }
 
-async function fetchWeeklyRepositoryActivity(repository, username) {
-  const parsed = parseRepository(repository, username);
-  if (!parsed) return null;
-
-  const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
-  const base = `https://api.github.com/repos/${encodeURIComponent(parsed.owner)}/${encodeURIComponent(parsed.repo)}`;
-  const params = `since=${encodeURIComponent(since)}&per_page=5`;
-
-  const [repo, commits, issueEvents] = await Promise.all([
-    fetchGitHubJson(base, "GitHub repository fetch"),
-    fetchGitHubJson(`${base}/commits?${params}`, "GitHub weekly commits fetch"),
-    fetchGitHubJson(`${base}/issues?state=all&${params}`, "GitHub weekly issues fetch"),
-  ]);
-
-  const issues = [];
-  const pulls = [];
-
-  for (const item of issueEvents) {
-    const normalized = {
-      number: item.number,
-      title: item.title,
-      state: item.state,
-      updatedAt: item.updated_at,
-      url: item.html_url,
-    };
-
-    if (item.pull_request) pulls.push(normalized);
-    else issues.push(normalized);
-  }
-
-  return {
-    repo: {
-      fullName: repo.full_name || parsed.fullName,
-      description: repo.description || "No description",
-      stars: repo.stargazers_count || 0,
-      forks: repo.forks_count || 0,
-      openIssues: repo.open_issues_count || 0,
-      defaultBranch: repo.default_branch || "main",
-    },
-    since,
-    commits: commits.map((commit) => ({
-      sha: commit.sha,
-      message: String(commit.commit?.message || "No commit message").split("\n")[0],
-      author: commit.commit?.author?.name || commit.author?.login || "unknown",
-      date: commit.commit?.author?.date || commit.commit?.committer?.date,
-      url: commit.html_url,
-    })),
-    issues,
-    pulls,
+export async function fetchWeeklyRepoActivity(username) {
+  const headers = {
+    Accept: "application/vnd.github+json",
+    "User-Agent": "ai-agentrouter",
   };
+
+  const reposRes = await fetch(`https://api.github.com/users/${username}/repos?per_page=10&sort=updated`, { headers });
+  const repos = await reposRes.json();
+
+  const weekAgo = new Date();
+  weekAgo.setDate(weekAgo.getDate() - 7);
+
+  const activity = await Promise.all(
+    repos.slice(0, 10).map(async (repo) => {
+      const [commitsRes, issuesRes, prsRes] = await Promise.all([
+        fetch(`https://api.github.com/repos/${username}/${repo.name}/commits?since=${weekAgo.toISOString()}`, { headers }),
+        fetch(`https://api.github.com/repos/${username}/${repo.name}/issues?since=${weekAgo.toISOString()}&state=all`, { headers }),
+        fetch(`https://api.github.com/repos/${username}/${repo.name}/pulls?state=all`, { headers }),
+      ]);
+
+      const commits = await commitsRes.json();
+      const issues = await issuesRes.json();
+      const prs = await prsRes.json();
+
+      return {
+        name: repo.name,
+        stars: repo.stargazers_count,
+        language: repo.language || "N/A",
+        pushed_at: repo.pushed_at,
+        commits: Array.isArray(commits) ? commits.length : 0,
+        issues: Array.isArray(issues) ? issues.filter(i => !i.pull_request).length : 0,
+        prs: Array.isArray(prs) ? prs.length : 0,
+      };
+    })
+  );
+
+  return activity.sort((a, b) => b.commits - a.commits);
 }
 
 export async function fetchGitHubProfile(username, options = {}) {

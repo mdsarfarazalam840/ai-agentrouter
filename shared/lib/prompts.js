@@ -18,45 +18,64 @@ Keep it short and markdown formatted.
 `,
 
 improve: (data) => `
-  Suggest 3 short actionable improvements for this GitHub profile.
+  Suggest 3 high-impact improvements for this GitHub profile.
 
   Username: ${data.username}
   Repos: ${data.repos.join(", ")}
 
   Return markdown only.
 
-  Format:
-  ### Improvements
+  Format exactly:
 
-  - one README improvement
-  - one project improvement
-  - one visibility improvement
+  ## 🚀 AI Improvements
 
-  Keep it concise (max 120 words).
+  ### Profile Enhancements
+
+  - **README Optimization**  
+    A polished recommendation to improve profile presentation.
+
+  - **Project Structure**  
+    A polished recommendation to improve repository organization and clarity.
+
+  - **Visibility Boost**  
+    A polished recommendation to improve discoverability, credibility, or professional presence.
+
+  Rules:
+  - Keep it concise and professional
+  - Make each point practical and high-value
+  - Write like a senior GitHub reviewer
+  - Avoid generic wording
+  - Max 140 words total
   `,
 
   weekly: (data) => `
-        Generate a concise weekly GitHub report in markdown.
+    Generate a concise weekly GitHub engineering report for ${data.username}.
 
-        Developer: ${data.username}
-        Repository: ${data.weekly?.repo?.fullName || "N/A"}
+    Use this repository activity data:
+    ${JSON.stringify(data.weeklyActivity)}
 
-        Commits:
-        ${(data.weekly?.commits || []).slice(0, 2).map((c) => `- ${c.message}`).join("\n") || "- None"}
+    Return markdown only.
 
-        Issues:
-        ${(data.weekly?.issues || []).slice(0, 1).map((i) => `- #${i.number} ${i.title}`).join("\n") || "- None"}
+    Format exactly:
 
-        Rules:
-        - Output markdown only
-        - Start with: ## 📊 Weekly GitHub Activity
-        - Max 80 words
-        - 3 sections only:
-          - Summary
-          - Highlights
-          - Next Focus
-        - 2 bullets max per section
-      `,
+    ## 📊 Weekly GitHub Engineering Report
+
+    | Repository | Commits (7d) | PRs | Issues | Stars | Language | Last Push |
+    |------------|--------------|-----|--------|-------|----------|-----------|
+    | repo | 4 | 1 | 2 | 10 | TS | 2026-05-02 |
+
+    ## Key Insights
+    - 2 bullets
+
+    ## Next Focus
+    - 2 bullets
+
+    Rules:
+    - Max 8 repos
+    - Sort by commits desc
+    - Keep concise
+    - No fluff
+    `,
 
   optimize: (data) => `
 Optimize this GitHub profile:
