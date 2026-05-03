@@ -85,6 +85,7 @@ jobs:
             --function-id=${{ secrets.APPWRITE_PROFILE_FUNCTION_ID }} \
             --entrypoint="src/main.js" \
             --code="functions/github-profile-insights"
+            --activate=true
 
   deploy-pr-reviewer:
     needs: build-test
@@ -117,3 +118,4 @@ jobs:
             --function-id=${{ secrets.APPWRITE_PR_FUNCTION_ID }} \
             --entrypoint="src/main.js" \
             --code="functions/github-pr-reviewer"
+            --activate=true
