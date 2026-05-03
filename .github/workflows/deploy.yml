@@ -68,9 +68,19 @@ jobs:
       - name: Setup Appwrite CLI
         run: npm install -g appwrite-cli
 
+      - name: Configure Appwrite CLI
+        run: |
+            appwrite client \
+            --endpoint ${{ secrets.APPWRITE_ENDPOINT }} \
+            --project-id ${{ secrets.APPWRITE_PROJECT_ID }} \
+            --key ${{ secrets.APPWRITE_API_KEY }}
+
       - name: Deploy github-profile-insights
         run: |
-          appwrite login --endpoint ${{ secrets.APPWRITE_ENDPOINT }} --key ${{ secrets.APPWRITE_API_KEY }}
+          appwrite client \
+            --endpoint ${{ secrets.APPWRITE_ENDPOINT }} \
+            --project-id ${{ secrets.APPWRITE_PROJECT_ID }} \
+            --key ${{ secrets.APPWRITE_API_KEY }}
           appwrite functions createDeployment \
             --functionId=${{ secrets.APPWRITE_PROFILE_FUNCTION_ID }} \
             --entrypoint="src/main.js" \
@@ -90,9 +100,19 @@ jobs:
       - name: Setup Appwrite CLI
         run: npm install -g appwrite-cli
 
+      - name: Configure Appwrite CLI
+        run: |
+            appwrite client \
+            --endpoint ${{ secrets.APPWRITE_ENDPOINT }} \
+            --project-id ${{ secrets.APPWRITE_PROJECT_ID }} \
+            --key ${{ secrets.APPWRITE_API_KEY }}
+
       - name: Deploy github-pr-reviewer
         run: |
-          appwrite login --endpoint ${{ secrets.APPWRITE_ENDPOINT }} --key ${{ secrets.APPWRITE_API_KEY }}
+          appwrite client \
+            --endpoint ${{ secrets.APPWRITE_ENDPOINT }} \
+            --project-id ${{ secrets.APPWRITE_PROJECT_ID }} \
+            --key ${{ secrets.APPWRITE_API_KEY }}
           appwrite functions createDeployment \
             --functionId=${{ secrets.APPWRITE_PR_FUNCTION_ID }} \
             --entrypoint="src/main.js" \
