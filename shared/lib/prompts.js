@@ -271,7 +271,32 @@ ${diff.slice(0, 15000)}
 
   switch (command) {
     case "/review":
-      return buildPrReviewPrompt(diff);
+      return `Review this pull request like a senior engineer.
+
+      PR DIFF:
+      ${diff.slice(0, 15000)}
+
+      Return markdown only.
+
+      Format:
+      ## Summary
+      - concise overview
+
+      ## Key Findings
+      - bullet findings
+
+      ## Risks
+      - bullet risks
+
+      ## Recommendations
+      - bullet recommendations
+
+      Rules:
+      - Be practical
+      - Be concise
+      - No JSON
+      - No code fences
+      - Human readable only`;
 
     case "/risks":
       return `Review this PR and identify risky changes.
