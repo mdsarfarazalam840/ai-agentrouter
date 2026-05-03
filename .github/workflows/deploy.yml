@@ -82,7 +82,7 @@ jobs:
             --project-id ${{ secrets.APPWRITE_PROJECT_ID }} \
             --key ${{ secrets.APPWRITE_API_KEY }}
           appwrite functions create-deployment \
-            --functionId=${{ secrets.APPWRITE_PROFILE_FUNCTION_ID }} \
+            --function-id=${{ secrets.APPWRITE_PROFILE_FUNCTION_ID }} \
             --entrypoint="src/main.js" \
             --code="functions/github-profile-insights"
 
@@ -114,6 +114,6 @@ jobs:
             --project-id ${{ secrets.APPWRITE_PROJECT_ID }} \
             --key ${{ secrets.APPWRITE_API_KEY }}
           appwrite functions create-deployment \
-            --functionId=${{ secrets.APPWRITE_PR_FUNCTION_ID }} \
+            --function-id=${{ secrets.APPWRITE_PR_FUNCTION_ID }} \
             --entrypoint="src/main.js" \
             --code="functions/github-pr-reviewer"
