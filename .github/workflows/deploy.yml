@@ -76,16 +76,7 @@ jobs:
             --key ${{ secrets.APPWRITE_API_KEY }}
 
       - name: Deploy github-profile-insights
-        run: |
-          appwrite client \
-            --endpoint ${{ secrets.APPWRITE_ENDPOINT }} \
-            --project-id ${{ secrets.APPWRITE_PROJECT_ID }} \
-            --key ${{ secrets.APPWRITE_API_KEY }}
-          appwrite functions create-deployment \
-            --function-id=${{ secrets.APPWRITE_PROFILE_FUNCTION_ID }} \
-            --entrypoint="src/main.js" \
-            --code="functions/github-profile-insights"
-            --activate=true
+        run: appwrite functions create-deployment --function-id="${{ secrets.APPWRITE_PROFILE_FUNCTION_ID }}" --entrypoint="src/main.js" --code="functions/github-profile-insights" --activate=true
 
   deploy-pr-reviewer:
     needs: build-test
@@ -109,13 +100,4 @@ jobs:
             --key ${{ secrets.APPWRITE_API_KEY }}
 
       - name: Deploy github-pr-reviewer
-        run: |
-          appwrite client \
-            --endpoint ${{ secrets.APPWRITE_ENDPOINT }} \
-            --project-id ${{ secrets.APPWRITE_PROJECT_ID }} \
-            --key ${{ secrets.APPWRITE_API_KEY }}
-          appwrite functions create-deployment \
-            --function-id=${{ secrets.APPWRITE_PR_FUNCTION_ID }} \
-            --entrypoint="src/main.js" \
-            --code="functions/github-pr-reviewer"
-            --activate=true
+        run: appwrite functions create-deployment --function-id="${{ secrets.APPWRITE_PR_FUNCTION_ID }}" --entrypoint="src/main.js" --code="functions/github-pr-reviewer" --activate=true
