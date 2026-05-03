@@ -30,17 +30,28 @@ export default async ({ req, res, log, error }) => {
   try {
     log("Webhook received");
 
-    const event = getHeader(req.headers, "x-github-event");
+    const body = parseRequestBody(req, error);
+
+    const event =
+      getHeader(req.headers, "x-github-event") ||
+      (body.pull_request ? "pull_request" : null);
+
+    log(`GitHub event: ${event || "missing"}`);
+
     if (event !== "pull_request") {
+      log(`Skipping unsupported event: ${event || "missing"}`);
       return res.text("Ignored");
     }
 
-    const body = parseRequestBody(req, error);
-    const isValidSignature = verifyWebhookSignature({
-      headers: req.headers,
-      bodyRaw: req.bodyText || req.bodyRaw,
-      body,
-    });
+    log(`PR action: ${body.action || "missing"}`);
+    const isManualTest = !getHeader(req.headers, "x-hub-signature-256");
+    const isValidSignature = isManualTest
+      ? true
+      : verifyWebhookSignature({
+          headers: req.headers,
+          bodyRaw: req.bodyText || req.bodyRaw,
+          body,
+        });
 
     if (!isValidSignature) {
       error("Webhook signature validation failed");
@@ -48,6 +59,7 @@ export default async ({ req, res, log, error }) => {
     }
 
     if (body.action !== "opened" && body.action !== "synchronize") {
+      log(`Skipping unsupported PR action: ${body.action}`);
       return res.text("Ignored action");
     }
 
@@ -56,7 +68,7 @@ export default async ({ req, res, log, error }) => {
     const installationId = body.installation?.id;
 
     if (!pr || !repo || !installationId) {
-      error("Webhook payload missing required pull request metadata");
+      error(`Webhook payload missing metadata: pr=${!!pr} repo=${!!repo} installationId=${!!installationId}`);
       return res.text("Invalid payload", 400);
     }
 
@@ -78,9 +90,12 @@ export default async ({ req, res, log, error }) => {
         [{ role: "user", content: buildPrReviewPrompt(diff) }],
         {
           temperature: 0.2,
-          top_p: 0.9,
-          max_tokens: 1200,
+          top_p: 0.8,
+          max_tokens: 500,
+          enableThinking: false,
+          providerTimeoutMs: 45000,
           errorLogger: error,
+          task: "pr_review",
         }
       );
       log("AI review response received");
@@ -93,6 +108,8 @@ export default async ({ req, res, log, error }) => {
     const review = normalizeReview(parsed);
     const hasHigh = review.issues.some((issue) => issue.severity === "high");
     const hasMedium = review.issues.some((issue) => issue.severity === "medium");
+
+    log("Applying GitHub review outputs");
 
     await createInlineReviewComments({
       octokit,

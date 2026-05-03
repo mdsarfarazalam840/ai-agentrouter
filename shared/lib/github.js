@@ -164,12 +164,100 @@ ${review.issues.map((issue) => `- ${issue.title} (${issue.severity})`).join("\n"
   });
 }
 
-export async function fetchGitHubProfile(username) {
-  const userResponse = await fetch(`https://api.github.com/users/${encodeURIComponent(username)}`, {
-    headers: {
-      Accept: "application/vnd.github+json",
-      "User-Agent": "appwrite-github-ai-agent",
+function buildPublicGitHubHeaders() {
+  const headers = {
+    Accept: "application/vnd.github+json",
+    "User-Agent": "appwrite-github-ai-agent",
+  };
+
+  if (process.env.GITHUB_TOKEN) {
+    headers.Authorization = `Bearer ${process.env.GITHUB_TOKEN}`;
+  }
+
+  return headers;
+}
+
+async function fetchGitHubJson(url, description) {
+  const response = await fetch(url, {
+    headers: buildPublicGitHubHeaders(),
+  });
+
+  if (!response.ok) {
+    throw new Error(`${description} failed with status ${response.status}`);
+  }
+
+  return response.json();
+}
+
+function parseRepository(repository, username) {
+  if (!repository) return null;
+
+  const [owner, repo] = repository.split("/");
+  if (!owner || !repo) return null;
+
+  return {
+    owner: owner.trim(),
+    repo: repo.trim(),
+    fullName: `${owner.trim()}/${repo.trim()}`,
+    username,
+  };
+}
+
+async function fetchWeeklyRepositoryActivity(repository, username) {
+  const parsed = parseRepository(repository, username);
+  if (!parsed) return null;
+
+  const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+  const base = `https://api.github.com/repos/${encodeURIComponent(parsed.owner)}/${encodeURIComponent(parsed.repo)}`;
+  const params = `since=${encodeURIComponent(since)}&per_page=5`;
+
+  const [repo, commits, issueEvents] = await Promise.all([
+    fetchGitHubJson(base, "GitHub repository fetch"),
+    fetchGitHubJson(`${base}/commits?${params}`, "GitHub weekly commits fetch"),
+    fetchGitHubJson(`${base}/issues?state=all&${params}`, "GitHub weekly issues fetch"),
+  ]);
+
+  const issues = [];
+  const pulls = [];
+
+  for (const item of issueEvents) {
+    const normalized = {
+      number: item.number,
+      title: item.title,
+      state: item.state,
+      updatedAt: item.updated_at,
+      url: item.html_url,
+    };
+
+    if (item.pull_request) pulls.push(normalized);
+    else issues.push(normalized);
+  }
+
+  return {
+    repo: {
+      fullName: repo.full_name || parsed.fullName,
+      description: repo.description || "No description",
+      stars: repo.stargazers_count || 0,
+      forks: repo.forks_count || 0,
+      openIssues: repo.open_issues_count || 0,
+      defaultBranch: repo.default_branch || "main",
     },
+    since,
+    commits: commits.map((commit) => ({
+      sha: commit.sha,
+      message: String(commit.commit?.message || "No commit message").split("\n")[0],
+      author: commit.commit?.author?.name || commit.author?.login || "unknown",
+      date: commit.commit?.author?.date || commit.commit?.committer?.date,
+      url: commit.html_url,
+    })),
+    issues,
+    pulls,
+  };
+}
+
+export async function fetchGitHubProfile(username, options = {}) {
+  const userResponse = await fetch(`https://api.github.com/users/${encodeURIComponent(username)}`, {
+    headers: buildPublicGitHubHeaders(),
   });
 
   if (!userResponse.ok) {
@@ -179,10 +267,7 @@ export async function fetchGitHubProfile(username) {
   const repoResponse = await fetch(
     `https://api.github.com/users/${encodeURIComponent(username)}/repos?per_page=5&sort=updated`,
     {
-      headers: {
-        Accept: "application/vnd.github+json",
-        "User-Agent": "appwrite-github-ai-agent",
-      },
+      headers: buildPublicGitHubHeaders(),
     }
   );
 
@@ -192,11 +277,36 @@ export async function fetchGitHubProfile(username) {
 
   const user = await userResponse.json();
   const repos = await repoResponse.json();
+  let weekly = null;
+
+  if (options.repository) {
+    try {
+      weekly = await fetchWeeklyRepositoryActivity(options.repository, username);
+    } catch (err) {
+      weekly = {
+        error: err.message,
+        repo: {
+          fullName: options.repository,
+          description: "Weekly repository activity could not be fetched.",
+          stars: 0,
+          forks: 0,
+          openIssues: 0,
+          defaultBranch: "main",
+        },
+        since: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString(),
+        commits: [],
+        issues: [],
+        pulls: [],
+      };
+    }
+  }
   const reposDetailed = repos.map((repo) => `
     Name: ${repo.name}
     Stars: ${repo.stargazers_count}
     Language: ${repo.language}
     Description: ${repo.description}
+    Updated: ${repo.updated_at}
+    Pushed: ${repo.pushed_at}
     `);
 
   return {
@@ -205,5 +315,6 @@ export async function fetchGitHubProfile(username) {
     repoCount: user.public_repos,
     repos: repos.map((repo) => repo.name),
     reposDetailed,
+    weekly,
   };
 }

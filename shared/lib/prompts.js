@@ -17,31 +17,46 @@ Give:
 Keep it short and markdown formatted.
 `,
 
-  improve: (data) => `
-Suggest improvements for this GitHub profile:
+improve: (data) => `
+  Suggest 3 short actionable improvements for this GitHub profile.
 
-Username: ${data.username}
-Repos: ${data.repos.join(", ")}
+  Username: ${data.username}
+  Repos: ${data.repos.join(", ")}
 
-Focus on:
-- README
-- Projects
-- Visibility
-`,
+  Return markdown only.
+
+  Format:
+  ### Improvements
+
+  - one README improvement
+  - one project improvement
+  - one visibility improvement
+
+  Keep it concise (max 120 words).
+  `,
 
   weekly: (data) => `
-Analyze weekly GitHub activity:
+        Generate a concise weekly GitHub report in markdown.
 
-Username: ${data.username}
-Repos: ${data.repos.join(", ")}
+        Developer: ${data.username}
+        Repository: ${data.weekly?.repo?.fullName || "N/A"}
 
-Give:
-- Weekly summary
-- Productivity insights
-- Suggestions
+        Commits:
+        ${(data.weekly?.commits || []).slice(0, 2).map((c) => `- ${c.message}`).join("\n") || "- None"}
 
-Keep it short and markdown formatted.
-`,
+        Issues:
+        ${(data.weekly?.issues || []).slice(0, 1).map((i) => `- #${i.number} ${i.title}`).join("\n") || "- None"}
+
+        Rules:
+        - Output markdown only
+        - Start with: ## 📊 Weekly GitHub Activity
+        - Max 80 words
+        - 3 sections only:
+          - Summary
+          - Highlights
+          - Next Focus
+        - 2 bullets max per section
+      `,
 
   optimize: (data) => `
 Optimize this GitHub profile:
