@@ -32,4 +32,4 @@ jobs:
             exit 1
           fi
 
-          python scripts/health_check.py
+          python health-check/health_check.py
