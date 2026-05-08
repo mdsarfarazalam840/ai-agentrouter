@@ -32,36 +32,4 @@ jobs:
             exit 1
           fi
 
-          echo "Configuring Appwrite Client..."
-          appwrite client \
-            --endpoint "$APPWRITE_ENDPOINT" \
-            --project-id "$APPWRITE_PROJECT_ID" \
-            --key "$APPWRITE_API_KEY"
-          
-          echo "Listing available functions for verification..."
-          appwrite functions list
-          
-          echo "Triggering health-check function ($FUNCTION_ID)..."
-          EXECUTION=$(appwrite functions create-execution \
-            --function-id "$FUNCTION_ID" \
-            --async false)
-          
-          echo "Execution Result:"
-          echo "$EXECUTION" | jq .
-          
-          STATUS=$(echo "$EXECUTION" | jq -r '.status')
-          if [ "$STATUS" != "completed" ]; then
-            echo "FAIL: Function execution status is $STATUS"
-            exit 1
-          fi
-          
-          RESPONSE_BODY=$(echo "$EXECUTION" | jq -r '.responseBody')
-          OK=$(echo "$RESPONSE_BODY" | jq -r '.ok')
-          
-          if [ "$OK" == "true" ]; then
-            echo "SUCCESS: Health check passed."
-          else
-            echo "FAIL: Health check response 'ok' is not true."
-            echo "Response: $RESPONSE_BODY"
-            exit 1
-          fi
+          python scripts/health_check.py
