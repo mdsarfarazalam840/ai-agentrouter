@@ -11,7 +11,6 @@ permissions:
 jobs:
   health-check:
     runs-on: ubuntu-latest
-    environment: production
 
     steps:
       - name: Checkout
@@ -22,22 +21,26 @@ jobs:
 
       - name: Configure Appwrite & Execute
         env:
-          APPWRITE_ENDPOINT: ${{ secrets.APPWRITE_ENDPOINT || 'https://fra.cloud.appwrite.io/v1' }}
-          APPWRITE_PROJECT_ID: ${{ secrets.APPWRITE_PROJECT_ID }}
+          APPWRITE_ENDPOINT: ${{ secrets.APPWRITE_ENDPOINT || 'https://cloud.appwrite.io/v1' }}
+          APPWRITE_PROJECT_ID: ${{ secrets.APPWRITE_PROJECT_ID || '69f2da78000231a299a3' }}
           APPWRITE_API_KEY: ${{ secrets.APPWRITE_API_KEY }}
           FUNCTION_ID: ${{ secrets.APPWRITE_HEALTH_FUNCTION_ID || '69f2e2230023ab412430' }}
         run: |
           if [ -z "$APPWRITE_API_KEY" ]; then
-            echo "Error: APPWRITE_API_KEY is not set. Please add it to your repository secrets."
+            echo "::error::APPWRITE_API_KEY is missing. Ensure it is added to Repository Secrets (not Environment Secrets)."
             exit 1
           fi
 
+          echo "Configuring Appwrite Client..."
           appwrite client \
             --endpoint "$APPWRITE_ENDPOINT" \
             --project-id "$APPWRITE_PROJECT_ID" \
             --key "$APPWRITE_API_KEY"
           
-          echo "Triggering health-check function..."
+          echo "Listing available functions for verification..."
+          appwrite functions list
+          
+          echo "Triggering health-check function ($FUNCTION_ID)..."
           EXECUTION=$(appwrite functions create-execution \
             --function-id "$FUNCTION_ID" \
             --async false)
