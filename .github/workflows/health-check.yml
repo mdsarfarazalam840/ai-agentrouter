@@ -1,0 +1,64 @@
+name: Hourly Health Check
+
+on:
+  schedule:
+    - cron: '0 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  health-check:
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Appwrite CLI
+        run: npm install -g appwrite-cli
+
+      - name: Configure Appwrite & Execute
+        env:
+          APPWRITE_ENDPOINT: ${{ secrets.APPWRITE_ENDPOINT }}
+          APPWRITE_PROJECT_ID: ${{ secrets.APPWRITE_PROJECT_ID }}
+          APPWRITE_API_KEY: ${{ secrets.APPWRITE_API_KEY }}
+          # Function ID from appwrite.config.json
+          FUNCTION_ID: "69f2e2230023ab412430"
+        run: |
+          if [ -z "$APPWRITE_API_KEY" ]; then
+            echo "Error: APPWRITE_API_KEY is not set. Please add it to your repository secrets."
+            exit 1
+          fi
+
+          appwrite client \
+            --endpoint "$APPWRITE_ENDPOINT" \
+            --project-id "$APPWRITE_PROJECT_ID" \
+            --key "$APPWRITE_API_KEY"
+          
+          echo "Triggering health-check function..."
+          EXECUTION=$(appwrite functions create-execution \
+            --function-id "$FUNCTION_ID" \
+            --async false)
+          
+          echo "Execution Result:"
+          echo "$EXECUTION" | jq .
+          
+          STATUS=$(echo "$EXECUTION" | jq -r '.status')
+          if [ "$STATUS" != "completed" ]; then
+            echo "FAIL: Function execution status is $STATUS"
+            exit 1
+          fi
+          
+          RESPONSE_BODY=$(echo "$EXECUTION" | jq -r '.responseBody')
+          OK=$(echo "$RESPONSE_BODY" | jq -r '.ok')
+          
+          if [ "$OK" == "true" ]; then
+            echo "SUCCESS: Health check passed."
+          else
+            echo "FAIL: Health check response 'ok' is not true."
+            echo "Response: $RESPONSE_BODY"
+            exit 1
+          fi
