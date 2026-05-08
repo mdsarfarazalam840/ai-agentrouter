@@ -11,6 +11,7 @@ permissions:
 jobs:
   health-check:
     runs-on: ubuntu-latest
+    environment: health
 
     steps:
       - name: Checkout
@@ -21,13 +22,13 @@ jobs:
 
       - name: Configure Appwrite & Execute
         env:
-          APPWRITE_ENDPOINT: ${{ secrets.APPWRITE_ENDPOINT || 'https://cloud.appwrite.io/v1' }}
-          APPWRITE_PROJECT_ID: ${{ secrets.APPWRITE_PROJECT_ID || '69f2da78000231a299a3' }}
+          APPWRITE_ENDPOINT: ${{ vars.APPWRITE_ENDPOINT || 'https://cloud.appwrite.io/v1' }}
+          APPWRITE_PROJECT_ID: ${{ vars.APPWRITE_PROJECT_ID || '69f2e19a00218fea645f' }}
           APPWRITE_API_KEY: ${{ secrets.APPWRITE_API_KEY }}
-          FUNCTION_ID: ${{ secrets.APPWRITE_HEALTH_FUNCTION_ID || '69f2e2230023ab412430' }}
+          FUNCTION_ID: ${{ vars.APPWRITE_HEALTH_FUNCTION_ID || '69f2e2230023ab412430' }}
         run: |
           if [ -z "$APPWRITE_API_KEY" ]; then
-            echo "::error::APPWRITE_API_KEY is missing. Ensure it is added to Repository Secrets (not Environment Secrets)."
+            echo "::error::APPWRITE_API_KEY is missing. Ensure it is added to Environment Secrets for 'health' or Repository Secrets."
             exit 1
           fi
 
