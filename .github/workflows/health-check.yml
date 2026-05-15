@@ -2,11 +2,15 @@ name: Hourly Health Check
 
 on:
   schedule:
-    - cron: '0 * * * *'
+    - cron: '*/30 * * * *'
   workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: health-check
+  cancel-in-progress: true
 
 jobs:
   health-check:
@@ -28,7 +32,7 @@ jobs:
           FUNCTION_ID: ${{ vars.APPWRITE_HEALTH_FUNCTION_ID || '69f2e2230023ab412430' }}
         run: |
           if [ -z "$APPWRITE_API_KEY" ]; then
-            echo "::error::APPWRITE_API_KEY is missing. Ensure it is added to Environment Secrets for 'health' or Repository Secrets."
+            echo "::error::APPWRITE_API_KEY is missing."
             exit 1
           fi
 
