@@ -26,12 +26,18 @@ function cacheSeconds() { const value = Number(process.env.AI_MODEL_CACHE_SECOND
 function modelMode() { return String(process.env.AI_MODEL_MODE || "dynamic").toLowerCase() === "fixed" ? "fixed" : "dynamic"; }
 function timeoutMs(options = {}) { return Math.max(1, Math.min(Number(options.providerTimeoutMs) || Number(process.env.AI_PROVIDER_TIMEOUT_MS) || DEFAULT_ATTEMPT_TIMEOUT_MS, 20000)); }
 function configured(provider) { return provider === "nvidia" ? Boolean(process.env.NVIDIA_API_KEY) : Boolean(process.env.OPENROUTER_API_KEY); }
+function isFreeOpenRouterModel(model, discovered = []) {
+  const entry = typeof model === "string" ? null : model;
+  const normalized = String(entry?.id || model || "").toLowerCase();
+  const freeById = normalized === "openrouter/free" || normalized.endsWith(":free");
+  const pricing = entry?.pricing;
+  const freeByEntry = Number(pricing?.prompt) === 0 && Number(pricing?.completion) === 0;
+  const freeByCatalog = discovered.some((candidate) => String(candidate.id || "").toLowerCase() === normalized && Number(candidate.pricing?.prompt) === 0 && Number(candidate.pricing?.completion) === 0);
+  return freeById || freeByEntry || freeByCatalog;
+}
 function isCompatibleConfiguredModel(provider, model, task, discovered = []) {
   if (provider === "openrouter" && process.env.AI_ALLOW_PAID_MODELS !== "true") {
-    const normalized = model.toLowerCase();
-    const freeById = normalized === "openrouter/free" || normalized.endsWith(":free");
-    const freeByCatalog = discovered.some((entry) => String(entry.id || "").toLowerCase() === normalized && Number(entry.pricing?.prompt) === 0 && Number(entry.pricing?.completion) === 0);
-    if (!freeById && !freeByCatalog) return false;
+    if (!isFreeOpenRouterModel(model, discovered)) return false;
   }
   return isTaskCompatible({ id: model }, task);
 }
@@ -71,8 +77,9 @@ function rankModels(models, task) {
 
 export function selectModels(provider, task, discovered = []) {
   const entries = discovered.map((model) => typeof model === "string" ? { id: model } : model).filter((model) => model?.id);
+  const eligibleEntries = entries.filter((model) => isTaskCompatible(model, task) && (provider !== "openrouter" || process.env.AI_ALLOW_PAID_MODELS === "true" || isFreeOpenRouterModel(model)));
   const configured = rankModels(configuredModels(provider).filter((model) => isCompatibleConfiguredModel(provider, model, task, entries)), task);
-  return configured.length ? configured : rankModels(entries.map((model) => model.id), task);
+  return configured.length ? configured : rankModels(eligibleEntries.map((model) => model.id), task);
 }
 
 async function discoverCatalog(provider, task, signal) {

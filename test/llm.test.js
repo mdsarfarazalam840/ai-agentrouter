@@ -5,6 +5,8 @@ import test from "node:test";
 import { callLLM, filterCatalogModels, getProviderHealth, resetProviderCatalogCache, selectModels } from "../shared/lib/llm.js";
 const execFileAsync = promisify(execFile);
 
+test.describe("LLM shared-state tests", { concurrency: false }, () => {
+
 test("LLM fails clearly when no providers are configured", async () => {
   const { stdout } = await execFileAsync(process.execPath, ["--input-type=module", "-e", "import { callLLM } from './shared/lib/llm.js'; (async () => { try { await callLLM([{role:'user',content:'x'}]); process.exitCode = 1; } catch (error) { if (error.message !== 'LLM_UNAVAILABLE') process.exitCode = 2; } })();"], { cwd: process.cwd(), env: { NVIDIA_API_KEY: "", OPENROUTER_API_KEY: "" } });
   assert.equal(stdout, "");
@@ -88,6 +90,24 @@ test("OpenRouter catalog filtering keeps only free models by ID or zero pricing"
     ], "issue_plan"),
     ["minimax/minimax-m3.1-flash:free"],
   );
+});
+
+test("selectModels excludes paid discovered OpenRouter models when paid models are disabled", () => {
+  const old = { allowPaid: process.env.AI_ALLOW_PAID_MODELS, models: process.env.AI_OPENROUTER_MODELS };
+  process.env.AI_ALLOW_PAID_MODELS = "false";
+  process.env.AI_OPENROUTER_MODELS = "";
+  try {
+    assert.deepEqual(
+      selectModels("openrouter", "issue_plan", [
+        { id: "openai/gpt-oss-20b", pricing: { prompt: "0.0001", completion: "0.0002" } },
+        { id: "minimax/minimax-m3.1-flash:free", pricing: { prompt: "0", completion: "0" } },
+      ]),
+      ["minimax/minimax-m3.1-flash:free"],
+    );
+  } finally {
+    old.allowPaid === undefined ? delete process.env.AI_ALLOW_PAID_MODELS : process.env.AI_ALLOW_PAID_MODELS = old.allowPaid;
+    old.models === undefined ? delete process.env.AI_OPENROUTER_MODELS : process.env.AI_OPENROUTER_MODELS = old.models;
+  }
 });
 
 test("configured OpenRouter IDs are selected when discovery marks them zero-priced", () => {
@@ -354,4 +374,6 @@ test("catalog failure still reaches the emergency fallback", async (t) => {
   t.after(() => { old === undefined ? delete process.env.NVIDIA_API_KEY : process.env.NVIDIA_API_KEY = old; resetProviderCatalogCache(); });
   t.mock.method(globalThis, "fetch", async (input) => (typeof input === "string" ? input : input.url).endsWith("/models") ? new Response("down", { status: 503 }) : new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), { headers: { "content-type": "application/json" } }));
   assert.equal(await callLLM([{ role: "user", content: "x" }], { totalTimeoutMs: 1000, providerTimeoutMs: 100, errorLogger() {} }), "ok");
+});
+
 });
