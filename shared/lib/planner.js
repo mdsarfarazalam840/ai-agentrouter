@@ -6,6 +6,8 @@ import { buildIssuePlanPrompt } from "./prompts.js";
 const MAX = 12000;
 const list = (value) => Array.isArray(value) ? value.filter((item) => typeof item === "string").map((item) => item.slice(0, 1000)).slice(0, 12) : [];
 const text = (value, fallback = "") => typeof value === "string" ? value.slice(0, MAX) : fallback;
+const meaningfulText = (value) => typeof value === "string" && value.trim().length > 0;
+const meaningfulList = (value) => Array.isArray(value) && value.some((item) => meaningfulText(item));
 
 export function issueRevision(issue = {}) {
   return crypto.createHash("sha256").update(JSON.stringify({ id: issue.id || issue.number, updatedAt: issue.updatedAt, title: issue.title, body: issue.body })).digest("hex").slice(0, 24);
@@ -17,8 +19,7 @@ export function normalizeIssuePlan(value, metadata = {}) {
     try { item = JSON.parse(item.replace(/^```json\s*|```$/g, "").trim()); } catch { throw new Error("INVALID_PLAN_JSON"); }
   }
   if (!item || typeof item !== "object" || Array.isArray(item)) throw new Error("INVALID_PLAN_JSON");
-  const hasContent = [item.summary, item.understanding, item.affectedFiles, item.implementationSteps, item.testPlan, item.risks, item.assumptions].some((entry) => typeof entry === "string" ? entry.trim().length > 0 : Array.isArray(entry) && entry.some((part) => typeof part === "string" && part.trim().length > 0));
-  if (!hasContent) throw new Error("INVALID_PLAN_OUTPUT");
+  if (!meaningfulText(item.summary) || !meaningfulList(item.implementationSteps) || !meaningfulList(item.testPlan)) throw new Error("INVALID_PLAN_OUTPUT");
   const confidence = ["low", "medium", "high"].includes(String(item.confidence).toLowerCase()) ? String(item.confidence).toLowerCase() : "low";
   return {
     summary: text(item.summary, "No summary was generated."),

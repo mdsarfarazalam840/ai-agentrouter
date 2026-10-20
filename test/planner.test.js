@@ -29,8 +29,8 @@ test("preserves the successful invocation provider and model in a normalized JSO
 });
 
 test("normalizes malformed or incomplete model fields safely", () => {
-  const plan = normalizeIssuePlan({ summary: 42, affectedFiles: "bad", confidence: "unknown" });
-  assert.equal(plan.summary, "No summary was generated.");
+  const plan = normalizeIssuePlan({ summary: "x", implementationSteps: ["y"], testPlan: ["z"], affectedFiles: "bad", confidence: "unknown" });
+  assert.equal(plan.summary, "x");
   assert.deepEqual(plan.affectedFiles, []);
   assert.equal(plan.confidence, "low");
 });
@@ -54,4 +54,8 @@ test("rejects whitespace-only and reasoning-only model output with safe planner 
   for (const output of [{ summary: "   " }, { reasoning: "I am still thinking" }, "not-json"]) {
     assert.throws(() => normalizeIssuePlan(output), /INVALID_PLAN_(?:OUTPUT|JSON)/);
   }
+});
+
+test("rejects a partial summary-only plan because required execution content is missing", () => {
+  assert.throws(() => normalizeIssuePlan({ summary: "x" }), /INVALID_PLAN_OUTPUT/);
 });

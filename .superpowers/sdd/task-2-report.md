@@ -16,8 +16,23 @@
 
 ### Commit
 
-Pending commit creation.
+`6385b31` (`feat: persist actual provider metadata for plans`).
 
 ### Concerns
 
 - `functions/github-pr-review/src/main.js` contains unrelated pre-existing working-tree changes; it was intentionally not staged.
+
+## Important review finding fix
+
+### Change
+
+- `shared/lib/planner.js` now requires a minimum viable plan before normalization: a meaningful summary, at least one meaningful implementation step, and at least one meaningful test-plan item. Optional fields remain optional.
+- `test/planner.test.js` covers rejection of the partial `{ summary: "x" }` object.
+- `test/phase-b-integration.test.js` proves the same partial object is rejected by `persistPlan` and produces zero persistence writes.
+
+### Verification
+
+- `node --test test/planner.test.js test/phase-b-integration.test.js` — PASS (18 tests, 18 passed, 0 failed).
+- `node --check shared/lib/planner.js` — PASS.
+- `node --check shared/lib/dashboard-store.js` — PASS.
+- `node --check functions/github-pr-review/src/main.js` — PASS.

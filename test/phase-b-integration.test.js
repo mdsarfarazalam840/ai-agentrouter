@@ -115,7 +115,7 @@ test('patch envelope preflight counts UTF-8 and JSON escaping without truncation
   assert.throws(() => normalizePatch({ diff: 'x'.repeat(12001) }), /DIFF_TOO_LARGE/);
 });
 
-test('plan persistence rejects incomplete model output before creating an envelope', async () => withEnvironment({
+test('plan persistence rejects a partial summary-only output before creating an envelope', async () => withEnvironment({
   APPWRITE_ENDPOINT: 'https://appwrite.test/v1', APPWRITE_PROJECT_ID: 'a', APPWRITE_API_KEY: 'private', WEBHOOK_DATABASE_ID: 'db', DASHBOARD_ISSUE_COLLECTION_ID: 'issues',
 }, async () => {
   let writes = 0;
@@ -123,7 +123,7 @@ test('plan persistence rejects incomplete model output before creating an envelo
   globalThis.fetch = async () => { writes += 1; return new Response('{}', { status: 201 }); };
   try {
     await assert.rejects(
-      createDashboardStore(process.env).persistPlan({ repository: 'owner/repo', issueNumber: 9, plan: { reasoning: 'secret internal reasoning' } }),
+      createDashboardStore(process.env).persistPlan({ repository: 'owner/repo', issueNumber: 9, plan: { summary: 'x' } }),
       /INVALID_PLAN_OUTPUT/,
     );
     assert.equal(writes, 0);
