@@ -26,8 +26,13 @@ function cacheSeconds() { const value = Number(process.env.AI_MODEL_CACHE_SECOND
 function modelMode() { return String(process.env.AI_MODEL_MODE || "dynamic").toLowerCase() === "fixed" ? "fixed" : "dynamic"; }
 function timeoutMs(options = {}) { return Math.max(1, Math.min(Number(options.providerTimeoutMs) || Number(process.env.AI_PROVIDER_TIMEOUT_MS) || DEFAULT_ATTEMPT_TIMEOUT_MS, 20000)); }
 function configured(provider) { return provider === "nvidia" ? Boolean(process.env.NVIDIA_API_KEY) : Boolean(process.env.OPENROUTER_API_KEY); }
-function isCompatibleConfiguredModel(provider, model, task) {
-  if (provider === "openrouter" && process.env.AI_ALLOW_PAID_MODELS !== "true" && model.toLowerCase() !== "openrouter/free" && !model.toLowerCase().endsWith(":free")) return false;
+function isCompatibleConfiguredModel(provider, model, task, discovered = []) {
+  if (provider === "openrouter" && process.env.AI_ALLOW_PAID_MODELS !== "true") {
+    const normalized = model.toLowerCase();
+    const freeById = normalized === "openrouter/free" || normalized.endsWith(":free");
+    const freeByCatalog = discovered.some((entry) => String(entry.id || "").toLowerCase() === normalized && Number(entry.pricing?.prompt) === 0 && Number(entry.pricing?.completion) === 0);
+    if (!freeById && !freeByCatalog) return false;
+  }
   return isTaskCompatible({ id: model }, task);
 }
 
@@ -56,9 +61,6 @@ export function filterCatalogModels(provider, entries = [], task = "review") {
 function configuredModels(provider) {
   const name = provider === "nvidia" ? "AI_NVIDIA_MODELS" : "AI_OPENROUTER_MODELS";
   const values = String(process.env[name] || "").split(",").map((model) => model.trim()).filter(Boolean);
-  if (provider === "openrouter" && process.env.AI_ALLOW_PAID_MODELS !== "true") {
-    return values.filter((model) => model.toLowerCase() === "openrouter/free" || model.toLowerCase().endsWith(":free"));
-  }
   return [...new Set(values)];
 }
 
@@ -68,8 +70,9 @@ function rankModels(models, task) {
 }
 
 export function selectModels(provider, task, discovered = []) {
-  const configured = rankModels(configuredModels(provider).filter((model) => isCompatibleConfiguredModel(provider, model, task)), task);
-  return configured.length ? configured : rankModels(discovered, task);
+  const entries = discovered.map((model) => typeof model === "string" ? { id: model } : model).filter((model) => model?.id);
+  const configured = rankModels(configuredModels(provider).filter((model) => isCompatibleConfiguredModel(provider, model, task, entries)), task);
+  return configured.length ? configured : rankModels(entries.map((model) => model.id), task);
 }
 
 async function discoverCatalog(provider, task, signal) {
@@ -81,7 +84,9 @@ async function discoverCatalog(provider, task, signal) {
     const response = await fetch(`${provider === "nvidia" ? NVIDIA_BASE_URL : OPENROUTER_BASE_URL}/models`, { headers: { Authorization: `Bearer ${apiKey}` }, signal });
     if (!response.ok) throw Object.assign(new Error("catalog unavailable"), { status: response.status });
     const body = await response.json();
-    const models = rankModels(filterCatalogModels(provider, Array.isArray(body.data) ? body.data : [], task), task);
+    const entries = Array.isArray(body.data) ? body.data : [];
+    const allowed = new Set(filterCatalogModels(provider, entries, task));
+    const models = entries.filter((model) => allowed.has(model.id));
     if (!models.length) throw new Error("catalog empty");
     catalogCache.set(key, { updated: Date.now(), models });
     health[provider].catalogStatus = "ok";
@@ -156,7 +161,7 @@ async function runProvider(messages, provider, options, deadline) {
         lastError = error;
         health[provider].lastFailureCategory = failureCategory(error);
         health[provider].updatedAt = now();
-        if (typeof options.errorLogger === "function") options.errorLogger(`[LLM] ${provider} model=${model} category=${failureCategory(error)} status=${error?.status || "none"} message=${String(error?.message || "unknown").slice(0, 240)}${error?.responseShape ? ` shape=${error.responseShape}` : ""}`);
+        if (typeof options.errorLogger === "function") options.errorLogger(`[LLM] ${provider} category=${failureCategory(error)} status=${Number.isFinite(error?.status) ? error.status : "none"} shape=${error?.code === "EMPTY_ASSISTANT_CONTENT" ? "empty_assistant" : "provider_error"}`);
         if (error?.code !== "EMPTY_ASSISTANT_CONTENT") break;
       }
     }
@@ -176,7 +181,7 @@ export async function callLLM(messages, options = {}) {
       health[provider].configured = configured(provider);
       if (!health[provider].configured) continue;
       try { return await runProvider(messages, provider, { ...options, signal: controller.signal }, deadline); }
-      catch (error) { logger(`[LLM] ${provider} failure: ${failureCategory(error)}`); }
+      catch (error) { logger(`[LLM] ${provider} category=${failureCategory(error)} status=${Number.isFinite(error?.status) ? error.status : "none"} shape=provider_error`); }
     }
     throw Object.assign(new Error("LLM_UNAVAILABLE"), { code: "LLM_UNAVAILABLE", providerCategory: "configured_providers_unavailable" });
   } finally { clearTimeout(timer); options.signal?.removeEventListener("abort", abortCaller); }

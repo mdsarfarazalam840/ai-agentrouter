@@ -90,6 +90,48 @@ test("OpenRouter catalog filtering keeps only free models by ID or zero pricing"
   );
 });
 
+test("configured OpenRouter IDs are selected when discovery marks them zero-priced", () => {
+  const old = {
+    allowPaid: process.env.AI_ALLOW_PAID_MODELS,
+    models: process.env.AI_OPENROUTER_MODELS,
+  };
+  process.env.AI_ALLOW_PAID_MODELS = "false";
+  process.env.AI_OPENROUTER_MODELS = "openai/gpt-oss-20b";
+  try {
+    const catalog = [
+      { id: "openai/gpt-oss-20b", pricing: { prompt: "0", completion: "0" } },
+      { id: "paid/model", pricing: { prompt: "0.1", completion: "0.2" } },
+    ];
+    assert.deepEqual(filterCatalogModels("openrouter", catalog, "issue_plan"), ["openai/gpt-oss-20b"]);
+    assert.deepEqual(selectModels("openrouter", "issue_plan", catalog), ["openai/gpt-oss-20b"]);
+  } finally {
+    old.allowPaid === undefined ? delete process.env.AI_ALLOW_PAID_MODELS : process.env.AI_ALLOW_PAID_MODELS = old.allowPaid;
+    old.models === undefined ? delete process.env.AI_OPENROUTER_MODELS : process.env.AI_OPENROUTER_MODELS = old.models;
+  }
+});
+
+test("provider error logs contain only safe category, status, and shape metadata", async (t) => {
+  const old = { key: process.env.NVIDIA_API_KEY, mode: process.env.AI_MODEL_MODE, models: process.env.AI_NVIDIA_MODELS };
+  process.env.NVIDIA_API_KEY = "test";
+  process.env.AI_MODEL_MODE = "fixed";
+  process.env.AI_NVIDIA_MODELS = "test/model";
+  t.after(() => {
+    old.key === undefined ? delete process.env.NVIDIA_API_KEY : process.env.NVIDIA_API_KEY = old.key;
+    old.mode === undefined ? delete process.env.AI_MODEL_MODE : process.env.AI_MODEL_MODE = old.mode;
+    old.models === undefined ? delete process.env.AI_NVIDIA_MODELS : process.env.AI_NVIDIA_MODELS = old.models;
+  });
+  const raw = "provider-body SECRET_RESPONSE model-output <script>alert(1)</script>";
+  const logs = [];
+  t.mock.method(globalThis, "fetch", async () => { throw Object.assign(new Error(raw), { status: 502, code: "UPSTREAM_RAW" }); });
+  await assert.rejects(callLLM([{ role: "user", content: "x" }], { totalTimeoutMs: 1000, providerTimeoutMs: 100, errorLogger: (line) => logs.push(line) }));
+  assert.ok(logs.length > 0);
+  assert.ok(logs.every((line) => line.includes("category=upstream_http") || line.includes("category=upstream_error")));
+  assert.ok(logs.every((line) => line.includes("status=502") || line.includes("status=none")));
+  assert.ok(logs.every((line) => line.includes("shape=")));
+  assert.equal(logs.some((line) => line.includes(raw)), false);
+  assert.equal(logs.some((line) => line.includes("SECRET_RESPONSE") || line.includes("model-output")), false);
+});
+
 test("NVIDIA failure falls back to a free OpenRouter model and never requests a paid configured ID", async (t) => {
   const old = {
     nvidia: process.env.NVIDIA_API_KEY,
