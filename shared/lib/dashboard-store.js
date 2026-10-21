@@ -95,7 +95,7 @@ async function request(c, url, options = {}) {
 
 export function dashboardMetadata() {
   const configured = (provider) => Boolean(provider === "nvidia" ? process.env.NVIDIA_API_KEY : process.env.OPENROUTER_API_KEY);
-  return { providers: { nvidia: { provider: "nvidia", configured: configured("nvidia"), available: configured("nvidia"), status: configured("nvidia") ? "ready" : "offline", selectedModel: null, lastFailureCategory: null }, openrouter: { provider: "openrouter", configured: configured("openrouter"), available: configured("openrouter"), status: configured("openrouter") ? "ready" : "offline", freeOnly: process.env.AI_ALLOW_PAID_MODELS !== "true", selectedModel: null, lastFailureCategory: null } }, generatedAt: new Date().toISOString() };
+  return { providers: { nvidia: { provider: "nvidia", configured: configured("nvidia"), available: false, status: configured("nvidia") ? "configured" : "offline", selectedModel: null, lastFailureCategory: null }, openrouter: { provider: "openrouter", configured: configured("openrouter"), available: false, status: configured("openrouter") ? "configured" : "offline", freeOnly: process.env.AI_ALLOW_PAID_MODELS !== "true", selectedModel: null, lastFailureCategory: null } }, generatedAt: new Date().toISOString() };
 }
 
 export function createDashboardStore(env = process.env, logger = () => {}) {

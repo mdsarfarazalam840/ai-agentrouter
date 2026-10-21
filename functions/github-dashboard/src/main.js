@@ -27,24 +27,59 @@ function normalizeFinding(value, context = {}) {
   }
   return result;
 }
-function safe(doc) { const data = doc?.data || doc; const result = {}; for (const key of ["$id", "reviewId", "repository", "fullName", "prNumber", "prTitle", "issueNumber", "issueTitle", "headSha", "baseSha", "commitUrl", "summary", "score", "verdict", "provider", "model", "deliveryId", "status", "createdAt", "command"]) if (data?.[key] !== undefined) result[key] = data[key]; if (data?.command === "plan" && typeof data.response === "string" && Buffer.byteLength(data.response, "utf8") <= 20000) { try { const envelope = JSON.parse(data.response); const plan = envelope?.kind === "plan" ? envelope.plan : null; if (plan && typeof plan === "object" && !Array.isArray(plan) && plan.repository === result.fullName && Number(plan.issueNumber) === Number(result.issueNumber)) { result.plan = plan; result.planId = result.$id; } } catch { /* malformed stored plan is unavailable */ } } if (Array.isArray(data?.findings)) result.findings = data.findings.map((finding) => normalizeFinding(finding, result)); if (data?.command !== "plan" && data?.command !== "patch" && typeof data?.response === "string") result.response = data.response.slice(0, 12000); return result; }
+function safe(doc) {
+  const data = doc?.data || doc;
+  const result = {};
+  for (const key of ["$id", "reviewId", "repository", "fullName", "prNumber", "prTitle", "issueNumber", "issueTitle", "headSha", "baseSha", "commitUrl", "summary", "score", "verdict", "provider", "model", "deliveryId", "status", "createdAt", "command"]) if (data?.[key] !== undefined) result[key] = data[key];
+  if (data?.command === "plan") {
+    let plan;
+    if (typeof data.plan === "string" && Buffer.byteLength(data.plan, "utf8") <= 20000) {
+      try { plan = JSON.parse(data.plan); } catch { /* malformed legacy plan is unavailable */ }
+    } else if (data.plan && typeof data.plan === "object" && !Array.isArray(data.plan)) {
+      plan = data.plan;
+    }
+    if (!plan && typeof data.response === "string" && Buffer.byteLength(data.response, "utf8") <= 20000) {
+      try { const envelope = JSON.parse(data.response); plan = envelope?.kind === "plan" ? envelope.plan : null; } catch { /* malformed stored plan is unavailable */ }
+    }
+    if (plan && typeof plan === "object" && !Array.isArray(plan)) {
+      const planRepository = plan.repository || plan.fullName;
+      const repositoryMatches = !result.fullName || !planRepository || planRepository === result.fullName;
+      const issueMatches = result.issueNumber === undefined || plan.issueNumber === undefined || Number(plan.issueNumber) === Number(result.issueNumber);
+      if (repositoryMatches && issueMatches) {
+        result.plan = plan;
+        result.planId = result.$id;
+        if (result.provider === undefined && plan.provider !== undefined) result.provider = plan.provider;
+        if (result.model === undefined && plan.model !== undefined) result.model = plan.model;
+      }
+    }
+  }
+  if (Array.isArray(data?.findings)) result.findings = data.findings.map((finding) => normalizeFinding(finding, result));
+  if (data?.command !== "plan" && data?.command !== "patch" && typeof data?.response === "string") result.response = data.response.slice(0, 12000);
+  return result;
+}
 export function flattenFindings(documents = []) { return documents.flatMap((doc) => { const data = doc?.data || doc || {}; const context = { reviewId: data.reviewId || data.$id || doc?.$id, repository: data.repository, fullName: data.fullName, prNumber: data.prNumber, prTitle: data.prTitle, headSha: data.headSha, baseSha: data.baseSha }; const values = Array.isArray(data.findings) ? data.findings : [data]; return values.map((finding) => normalizeFinding(finding, context)); }); }
-function normalizeProviders(providers = {}) {
+export function normalizeProviders(providers = {}) {
   const entries = Array.isArray(providers) ? providers.map((provider) => [provider.name || provider.provider, provider]) : Object.entries(providers);
   for (const name of ["nvidia", "openrouter"]) if (!entries.some(([key]) => key === name)) entries.push([name, { provider: name }]);
   return Object.fromEntries(entries.filter(([name]) => name).map(([name, provider = {}]) => {
     const configuredByEnv = name === "nvidia" ? Boolean(process.env.NVIDIA_API_KEY) : name === "openrouter" ? Boolean(process.env.OPENROUTER_API_KEY) : false;
     const configured = provider.configured === true || configuredByEnv;
-    const available = configured && provider.available !== false && !["offline", "unavailable"].includes(String(provider.status || "").toLowerCase());
+    const catalogStatus = String(provider.catalogStatus || "unavailable").toLowerCase();
+    const selectedModel = typeof provider.selectedModel === "string" && provider.selectedModel ? provider.selectedModel : null;
+    const lastFailureCategory = provider.lastFailureCategory || null;
+    const hasSuccessfulHealth = catalogStatus === "ok" && Boolean(selectedModel) && !lastFailureCategory;
+    const hasFallbackHealth = catalogStatus === "fallback" && Boolean(selectedModel) && !lastFailureCategory;
+    const available = configured && provider.available !== false && (hasSuccessfulHealth || hasFallbackHealth);
+    const status = !configured ? "offline" : lastFailureCategory ? "unavailable" : hasSuccessfulHealth ? "ready" : hasFallbackHealth ? "degraded" : "configured";
     return [name, {
       provider: provider.provider || name,
       configured,
       available,
-      status: available ? (provider.status || "ready") : "offline",
-      catalogStatus: provider.catalogStatus || "unavailable",
+      status,
+      catalogStatus,
       discoveredCount: Number.isSafeInteger(provider.discoveredCount) ? provider.discoveredCount : 0,
-      selectedModel: provider.selectedModel || null,
-      lastFailureCategory: provider.lastFailureCategory || null,
+      selectedModel,
+      lastFailureCategory,
       updatedAt: provider.updatedAt || null,
       ...(name === "openrouter" ? { freeOnly: process.env.AI_ALLOW_PAID_MODELS !== "true" } : {}),
     }];

@@ -24,14 +24,38 @@ test("dashboard health exposes provider metadata without secrets", async (t) => 
   assert.equal(response.body.providers.nvidia.provider, "nvidia");
   assert.equal(response.body.providers.nvidia.configured, true);
   assert.equal(typeof response.body.providers.nvidia.available, "boolean");
+  assert.equal(response.body.providers.nvidia.status, "configured");
+  assert.equal(response.body.providers.nvidia.available, false);
   assert.equal(response.body.providers.nvidia.selectedModel, null);
   assert.equal(response.body.providers.nvidia.lastFailureCategory, null);
   assert.equal(response.body.providers.openrouter.provider, "openrouter");
   assert.equal(response.body.providers.openrouter.configured, true);
+  assert.equal(response.body.providers.openrouter.status, "configured");
+  assert.equal(response.body.providers.openrouter.available, false);
   assert.equal(response.body.providers.openrouter.freeOnly, true);
   assert.equal(response.body.providers.openrouter.selectedModel, null);
   assert.equal(response.body.providers.openrouter.lastFailureCategory, null);
   assert.equal(JSON.stringify(response.body).includes("API_KEY"), false);
+});
+
+test("dashboard health only reports ready after catalog and model health evidence", async () => {
+  const { normalizeProviders } = await import("../functions/github-dashboard/src/main.js");
+  const ready = normalizeProviders({ nvidia: { provider: "nvidia", configured: true, catalogStatus: "ok", selectedModel: "meta/llama", lastFailureCategory: null } });
+  assert.deepEqual(ready.nvidia, {
+    provider: "nvidia",
+    configured: true,
+    available: true,
+    status: "ready",
+    catalogStatus: "ok",
+    discoveredCount: 0,
+    selectedModel: "meta/llama",
+    lastFailureCategory: null,
+    updatedAt: null,
+  });
+
+  const failed = normalizeProviders({ openrouter: { provider: "openrouter", configured: true, catalogStatus: "ok", selectedModel: "openrouter/free", lastFailureCategory: "upstream_http" } });
+  assert.equal(failed.openrouter.available, false);
+  assert.equal(failed.openrouter.status, "unavailable");
 });
 
 test("overview and issues expose persisted plan provider and model metadata safely", async (t) => {
@@ -49,6 +73,25 @@ test("overview and issues expose persisted plan provider and model metadata safe
     assert.equal(output.body.issues[0].model, "meta/llama");
     assert.equal(JSON.stringify(output.body).includes("should-not-appear"), false);
   }
+});
+
+test("overview and issues preserve provider/model metadata from legacy plan fields", async (t) => {
+  const old = { allow: process.env.DASHBOARD_ALLOWED_USER_IDS, repos: process.env.GITHUB_PATCH_ALLOWED_REPOSITORIES };
+  process.env.DASHBOARD_ALLOWED_USER_IDS = "user-1";
+  process.env.GITHUB_PATCH_ALLOWED_REPOSITORIES = "acme/app";
+  t.after(() => { for (const [key, value] of Object.entries({ DASHBOARD_ALLOWED_USER_IDS: old.allow, GITHUB_PATCH_ALLOWED_REPOSITORIES: old.repos })) value === undefined ? delete process.env[key] : process.env[key] = value; });
+  const records = [
+    { command: "plan", fullName: "acme/app", issueNumber: 7, plan: JSON.stringify({ repository: "acme/app", issueNumber: 7, provider: "nvidia", model: "legacy/string-model" }) },
+    { command: "plan", fullName: "acme/app", issueNumber: 8, plan: { repository: "acme/app", issueNumber: 8, provider: "openrouter", model: "legacy/object-model" } },
+  ];
+  const handler = createDashboardHandler({ makeStore: () => ({ listIssues: async () => records, listReviews: async () => [], listFindings: async () => [], listDeliveries: async () => [] }) });
+  let output;
+  await handler({ req: { headers: { "x-appwrite-user-id": "user-1", "x-appwrite-user-jwt": "jwt" }, bodyJson: { action: "overview" } }, res: { json: (body, status = 200) => (output = { body, status }) } });
+  assert.equal(output.status, 200);
+  assert.deepEqual(output.body.issues.map(({ provider, model }) => ({ provider, model })), [
+    { provider: "nvidia", model: "legacy/string-model" },
+    { provider: "openrouter", model: "legacy/object-model" },
+  ]);
 });
 
 test("dashboard flattens nested finding documents and preserves review context", () => {
