@@ -129,6 +129,31 @@ Date: 2026-10-21
 - `npm run check` — passed.
 - `npm run validate:config` — passed; 4 declared functions and 5 workflow entrypoints.
 - `npm run check:dashboard` — passed.
+
+## Final whole-branch review follow-up
+
+Date: 2026-10-21
+
+### Findings fixed
+
+- `/plan` now normalizes and persists the complete plan before any success-path GitHub comment side effect. Persistence failure therefore leaves no plan comment and releases the delivery through the existing outer failure path for retry.
+- `/plan` derives a deterministic `ai-agentrouter:issue-plan:<issueRevision>` marker, searches bot comments for that marker, and updates the existing comment when the rendered plan changes instead of creating duplicates on repeated commands or retries. Existing safe generation-failure comments remain unchanged.
+- Added handler coverage for repeated successful commands, persistence failure with no comment, and a later retry that creates the single plan comment after persistence recovers.
+- Provider health now clears `lastFailureCategory` after a successful completion; added failure-to-success recovery coverage so dashboard normalization can observe recovered availability.
+- Removed the duplicate `GITHUB_APP_INSTALLATION_ID` declaration from `.env.example`.
+
+### TDD evidence
+
+- Red: `node --test test/pr-handler.test.js` — 3 new lifecycle assertions failed against the pre-fix comment-before-persistence behavior; `node --test test/llm.test.js` — the new recovery assertion failed because failure health was retained.
+- Green: `node --test test/pr-handler.test.js test/llm.test.js` — 41 passed, 0 failed.
+
+### Required verification
+
+- `npm test` — 196 passed, 0 failed, 0 skipped.
+- `npm run check` — passed.
+- `npm run validate:config` — passed; 4 declared functions and 5 workflow entrypoints.
+- `npm run check:dashboard` — passed.
+- No deployment or paid model use was performed.
 - `npm audit --omit=dev --audit-level=high` — 0 vulnerabilities.
 
 ### Reviewer function deployment

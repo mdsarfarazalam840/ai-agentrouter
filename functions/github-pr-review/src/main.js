@@ -14,7 +14,7 @@ import { normalizeReview, parseReviewJson } from "../../../shared/lib/parser.js"
 import { createDeliveryStore } from "../../../shared/lib/delivery-store.js";
 import { createDashboardStore } from "../../../shared/lib/dashboard-store.js";
 import { getProviderHealth } from "../../../shared/lib/llm.js";
-import { createIssuePlan, renderIssuePlanMarkdown } from "../../../shared/lib/planner.js";
+import { createIssuePlan, normalizeIssuePlan, renderIssuePlanMarkdown } from "../../../shared/lib/planner.js";
 import { createPatchService, patchIssueRevision } from "../../../shared/lib/patch-service.js";
 
 function dashboardPatchUrl(repository, issueNumber, patchId) {
@@ -205,15 +205,31 @@ async function handleIssueComment({ body, res, log, error, deliveryId, makeClien
       const latestIssue = (await octokit.issues.get({ owner: repo.owner.login, repo: repo.name, issue_number: issue.number })).data;
       const latestRevision = await patchIssueRevision({ octokit, owner: repo.owner.login, repo: repo.name, issueNumber: issue.number, issue: latestIssue });
       if (initialRevision !== latestRevision) throw new Error("ISSUE_CHANGED");
-      plan.issueRevision = latestRevision;
+      plan = normalizeIssuePlan(plan, {
+        ...plan,
+        repository: repo.full_name || `${repo.owner.login}/${repo.name}`,
+        issueNumber: issue.number,
+        issueTitle: latestIssue.title || issue.title,
+        issueRevision: latestRevision,
+      });
       log("PLAN_GENERATION_SUCCEEDED");
     } catch {
       error("PLAN_GENERATION_FAILED");
       await octokit.issues.createComment({ owner: repo.owner.login, repo: repo.name, issue_number: issue.number, body: "## PRISM implementation plan\n\nPlan generation is temporarily unavailable. No repository files were changed." });
       return res.text("Plan unavailable", 502);
     }
-    await octokit.issues.createComment({ owner: repo.owner.login, repo: repo.name, issue_number: issue.number, body: renderPlan(plan) });
-    await makeStore(process.env, error).persistPlan({ ...plan, repository: repo.name, fullName: repo.full_name || `${repo.owner.login}/${repo.name}`, status: "completed", deliveryId, createdAt: plan.createdAt, plan });
+    const fullName = repo.full_name || `${repo.owner.login}/${repo.name}`;
+    const marker = `<!-- ai-agentrouter:issue-plan:${plan.issueRevision} -->`;
+    const rendered = renderPlan(plan);
+    const commentBody = rendered.startsWith(marker) ? rendered : `${marker}\n${rendered}`;
+    await makeStore(process.env, error).persistPlan({ ...plan, repository: repo.name, fullName, status: "completed", deliveryId, createdAt: plan.createdAt, plan });
+    const comments = await octokit.issues.listComments({ owner: repo.owner.login, repo: repo.name, issue_number: issue.number, per_page: 100 });
+    const previous = (comments.data || []).find((item) => item.user?.type === "Bot" && typeof item.body === "string" && item.body.includes(marker));
+    if (previous) {
+      if (previous.body !== commentBody) await octokit.issues.updateComment({ owner: repo.owner.login, repo: repo.name, comment_id: previous.id, body: commentBody });
+    } else {
+      await octokit.issues.createComment({ owner: repo.owner.login, repo: repo.name, issue_number: issue.number, body: commentBody });
+    }
     log("PLAN_PERSISTENCE_SUCCEEDED");
     return res.text("OK");
   }

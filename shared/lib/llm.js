@@ -161,6 +161,8 @@ async function runProvider(messages, provider, options, deadline) {
     for (let attempt = 0; attempt < 2; attempt += 1) {
       try {
         const content = await runCompletion(messages, { ...options, provider, model, providerTimeoutMs: Math.min(timeoutMs(options), deadline - Date.now()) });
+        health[provider].lastFailureCategory = null;
+        health[provider].updatedAt = now();
         if (typeof options.onInvocation === "function") options.onInvocation({ provider, model });
         return content;
       }

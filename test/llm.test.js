@@ -302,6 +302,31 @@ test("health metadata is safe and records provider failure without raw errors", 
   assert.equal(JSON.stringify(health).includes("nope"), false);
 });
 
+test("provider health clears the last failure category after recovery", async (t) => {
+  const old = { key: process.env.NVIDIA_API_KEY, openrouter: process.env.OPENROUTER_API_KEY, mode: process.env.AI_MODEL_MODE, models: process.env.AI_NVIDIA_MODELS };
+  process.env.NVIDIA_API_KEY = "secret-key";
+  delete process.env.OPENROUTER_API_KEY;
+  process.env.AI_MODEL_MODE = "fixed";
+  process.env.AI_NVIDIA_MODELS = "recovery/model";
+  t.after(() => {
+    old.key === undefined ? delete process.env.NVIDIA_API_KEY : process.env.NVIDIA_API_KEY = old.key;
+    old.openrouter === undefined ? delete process.env.OPENROUTER_API_KEY : process.env.OPENROUTER_API_KEY = old.openrouter;
+    old.mode === undefined ? delete process.env.AI_MODEL_MODE : process.env.AI_MODEL_MODE = old.mode;
+    old.models === undefined ? delete process.env.AI_NVIDIA_MODELS : process.env.AI_NVIDIA_MODELS = old.models;
+  });
+  let shouldFail = true;
+  t.mock.method(globalThis, "fetch", async () => {
+    return shouldFail
+      ? new Response("temporarily down", { status: 503 })
+      : new Response(JSON.stringify({ choices: [{ message: { content: "recovered" } }] }), { status: 200, headers: { "content-type": "application/json" } });
+  });
+  await assert.rejects(callLLM([{ role: "user", content: "x" }], { totalTimeoutMs: 1000, providerTimeoutMs: 100, errorLogger() {} }));
+  assert.equal(getProviderHealth().nvidia.lastFailureCategory, "upstream_http");
+  shouldFail = false;
+  assert.equal(await callLLM([{ role: "user", content: "x" }], { totalTimeoutMs: 1000, providerTimeoutMs: 100, errorLogger() {} }), "recovered");
+  assert.equal(getProviderHealth().nvidia.lastFailureCategory, null);
+});
+
 test("NVIDIA reasoning_content response shape remains supported without exposing internal reasoning", async (t) => {
   const old = { key: process.env.NVIDIA_API_KEY, mode: process.env.AI_MODEL_MODE, models: process.env.AI_NVIDIA_MODELS };
   process.env.NVIDIA_API_KEY = "test"; process.env.AI_MODEL_MODE = "fixed"; process.env.AI_NVIDIA_MODELS = "test/model";
