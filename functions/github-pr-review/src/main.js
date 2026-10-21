@@ -11,6 +11,20 @@ import {
 } from "../../../shared/lib/github.js";
 import { buildPrReviewPrompt, buildIssuePrompt, buildPrCommandPrompt, } from "../../../shared/lib/prompts.js";
 import { normalizeReview, parseReviewJson } from "../../../shared/lib/parser.js";
+import { createDeliveryStore } from "../../../shared/lib/delivery-store.js";
+import { createDashboardStore } from "../../../shared/lib/dashboard-store.js";
+import { getProviderHealth } from "../../../shared/lib/llm.js";
+import { createIssuePlan, renderIssuePlanMarkdown } from "../../../shared/lib/planner.js";
+import { createPatchService, patchIssueRevision } from "../../../shared/lib/patch-service.js";
+
+function dashboardPatchUrl(repository, issueNumber, patchId) {
+  try {
+    const url = new URL(process.env.DASHBOARD_PUBLIC_URL || "https://ai-agent-router-dashboard.vercel.app/");
+    if (url.protocol !== "https:" || url.hostname !== "ai-agent-router-dashboard.vercel.app" || url.port || url.username || url.password || url.search || url.hash || url.pathname !== "/") return null;
+    url.hash = new URLSearchParams({ repository, issueNumber: String(issueNumber), patchId }).toString();
+    return url.href;
+  } catch { return null; }
+}
 
 function parseRequestBody(req, logger) {
   if (req.bodyJson && typeof req.bodyJson === "object") return req.bodyJson;
@@ -26,7 +40,7 @@ function parseRequestBody(req, logger) {
   }
 }
 
-async function handleIssueOpened({ body, res, log, error }) {
+async function handleIssueOpened({ body, res, log, error, deliveryId }) {
   log(`Issue action: ${body.action || "missing"}`);
 
   if (body.action !== "opened") {
@@ -80,6 +94,7 @@ Return markdown with:
         max_tokens: 500,
         enableThinking: false,
         providerTimeoutMs: 45000,
+        responseFormat: { type: "json_object" },
         errorLogger: error,
         task: "issue_review",
       }
@@ -95,10 +110,19 @@ Return markdown with:
     body: `## 🤖 AI Issue Analysis\n\n${content}`,
   });
 
+  const provider = getProviderHealth();
+  await createDashboardStore(process.env, error).persistIssue({
+    repository: repo.name, fullName: repo.full_name || `${repo.owner.login}/${repo.name}`,
+    issueNumber: issue.number, issueTitle: issue.title, summary: content.slice(0, 2000), response: content,
+    provider: Object.values(provider).find((item) => item.selectedModel)?.provider || null,
+    model: Object.values(provider).find((item) => item.selectedModel)?.selectedModel || null,
+    deliveryId, status: "completed", createdAt: new Date().toISOString(), command: "analyze",
+  });
+
   return res.text("OK");
 }
 
-async function handleIssueComment({ body, res, log, error }) {
+async function handleIssueComment({ body, res, log, error, deliveryId, makeClient = createGitHubClient, makeStore = createDashboardStore, makeService = createPatchService, makePlan = createIssuePlan, renderPlan = renderIssuePlanMarkdown }) {
   log(`Issue comment action: ${body.action || "missing"}`);
 
   if (body.action !== "created") {
@@ -124,6 +148,8 @@ async function handleIssueComment({ body, res, log, error }) {
   const command = comment.body?.trim().split(/\s+/)[0]?.toLowerCase();
 
   const supportedCommands = [
+    "/plan",
+    "/patch",
     "/analyze",
     "/root-cause",
     "/fix",
@@ -141,7 +167,56 @@ async function handleIssueComment({ body, res, log, error }) {
     return res.text("Ignored comment");
   }
 
-  const octokit = createGitHubClient(installationId);
+  const octokit = makeClient(installationId);
+
+  if (command === "/patch") {
+    const owner = repo.owner?.login;
+    const repository = repo.name;
+    if (!owner || !repository || !comment.user?.login || !Number.isSafeInteger(issue.number) || issue.number < 1) return res.text("Invalid payload", 400);
+    try {
+      const permission = await octokit.repos.getCollaboratorPermissionLevel({ owner, repo: repository, username: comment.user.login });
+      if (!["write", "maintain", "admin"].includes(permission.data?.permission)) return res.text("Patch command forbidden", 403);
+    } catch { return res.text("Patch command forbidden", 403); }
+    try {
+      const service = makeService({ octokit, store: makeStore(process.env, error), logger: error });
+      const { patch, patchId } = await service.propose({ owner, repo: repository, issueNumber: issue.number });
+      const dashboardUrl = dashboardPatchUrl(`${owner}/${repository}`, issue.number, patchId);
+      if (!dashboardUrl) return res.text("Patch dashboard URL is not configured", 503);
+      const marker = `<!-- ai-agentrouter:issue-patch:${patchId} -->`;
+      const files = patch.files.slice(0, 10).map((file) => `- \`${file.path}\` (${file.operation})`).join("\n");
+      const risks = patch.risks.slice(0, 5).map((risk) => `- ${risk}`).join("\n");
+      const commentBody = `${marker}\n## PRISM patch proposal\n\n${patch.summary.slice(0, 1000)}\n\n### Files\n${files || "None"}\n\n### Risks\n${risks || "None"}\n\nReview and approve this proposal in the [PRISM dashboard](${dashboardUrl}). No repository files were changed.`;
+      const comments = await octokit.issues.listComments({ owner, repo: repository, issue_number: issue.number, per_page: 100 });
+      const previous = (comments.data || []).find((item) => item.user?.type === "Bot" && typeof item.body === "string" && item.body.includes(marker));
+      if (previous) {
+        if (previous.body !== commentBody) await octokit.issues.updateComment({ owner, repo: repository, comment_id: previous.id, body: commentBody });
+      } else await octokit.issues.createComment({ owner, repo: repository, issue_number: issue.number, body: commentBody });
+      return res.text("OK");
+    } catch { return res.text("Patch unavailable", 503); }
+  }
+
+  if (command === "/plan") {
+    let plan;
+    log("PLAN_GENERATION_STARTED");
+    try {
+      const initialIssue = (await octokit.issues.get({ owner: repo.owner.login, repo: repo.name, issue_number: issue.number })).data;
+      const initialRevision = await patchIssueRevision({ octokit, owner: repo.owner.login, repo: repo.name, issueNumber: issue.number, issue: initialIssue });
+      plan = await makePlan({ octokit, owner: repo.owner.login, repo: repo.name, issueNumber: issue.number, deliveryId, logger: error });
+      const latestIssue = (await octokit.issues.get({ owner: repo.owner.login, repo: repo.name, issue_number: issue.number })).data;
+      const latestRevision = await patchIssueRevision({ octokit, owner: repo.owner.login, repo: repo.name, issueNumber: issue.number, issue: latestIssue });
+      if (initialRevision !== latestRevision) throw new Error("ISSUE_CHANGED");
+      plan.issueRevision = latestRevision;
+      log("PLAN_GENERATION_SUCCEEDED");
+    } catch {
+      error("PLAN_GENERATION_FAILED");
+      await octokit.issues.createComment({ owner: repo.owner.login, repo: repo.name, issue_number: issue.number, body: "## PRISM implementation plan\n\nPlan generation is temporarily unavailable. No repository files were changed." });
+      return res.text("Plan unavailable", 502);
+    }
+    await octokit.issues.createComment({ owner: repo.owner.login, repo: repo.name, issue_number: issue.number, body: renderPlan(plan) });
+    await makeStore(process.env, error).persistPlan({ ...plan, repository: repo.name, fullName: repo.full_name || `${repo.owner.login}/${repo.name}`, status: "completed", deliveryId, createdAt: plan.createdAt, plan });
+    log("PLAN_PERSISTENCE_SUCCEEDED");
+    return res.text("OK");
+  }
 
   let content = "AI analysis unavailable.";
 
@@ -159,6 +234,7 @@ async function handleIssueComment({ body, res, log, error }) {
         max_tokens: 500,
         enableThinking: false,
         providerTimeoutMs: 45000,
+        responseFormat: { type: "json_object" },
         errorLogger: error,
         task: "issue_review",
       }
@@ -174,25 +250,20 @@ async function handleIssueComment({ body, res, log, error }) {
     body: `## 🤖 AI ${command.replace("/", "").replace("-", " ").toUpperCase()}\n\n${content}`,
   });
 
+  const provider = getProviderHealth();
+  await createDashboardStore(process.env, error).persistIssue({
+    repository: repo.name, fullName: repo.full_name || `${repo.owner.login}/${repo.name}`,
+    issueNumber: issue.number, issueTitle: issue.title, summary: content.slice(0, 2000), response: content,
+    provider: Object.values(provider).find((item) => item.selectedModel)?.provider || null,
+    model: Object.values(provider).find((item) => item.selectedModel)?.selectedModel || null,
+    deliveryId, status: "completed", createdAt: new Date().toISOString(), command,
+  });
+
   return res.text("OK");
 }
 
-async function handlePullRequest({ body, req, res, log, error }) {
+async function handlePullRequest({ body, req, res, log, error, deliveryId }) {
   log(`PR action: ${body.action || "missing"}`);
-
-  const isManualTest = !getHeader(req.headers, "x-hub-signature-256");
-  const isValidSignature = isManualTest
-    ? true
-    : verifyWebhookSignature({
-        headers: req.headers,
-        bodyRaw: req.bodyText || req.bodyRaw,
-        body,
-      });
-
-  if (!isValidSignature) {
-    error("Webhook signature validation failed");
-    return res.text("Invalid signature", 401);
-  }
 
   if (body.action !== "opened" && body.action !== "synchronize") {
     log(`Skipping unsupported PR action: ${body.action}`);
@@ -216,10 +287,12 @@ async function handlePullRequest({ body, req, res, log, error }) {
   const octokit = createGitHubClient(installationId);
 
   let diff = "No diff available";
+  let processingFailed = false;
   try {
     diff = await fetchPrDiff(pr);
   } catch (err) {
     error(`Diff fetch failed: ${err.message}`);
+    processingFailed = true;
   }
 
   let parsed = null;
@@ -241,50 +314,54 @@ async function handlePullRequest({ body, req, res, log, error }) {
     if (!parsed) error("Review JSON unavailable after safe extraction");
   } catch {
     error("AI review unavailable");
+    processingFailed = true;
   }
+
+  if (processingFailed) return res.text("PR review unavailable", 502);
 
   const review = normalizeReview(parsed);
   const hasHigh = review.issues.some((issue) => issue.severity === "high");
   const hasMedium = review.issues.some((issue) => issue.severity === "medium");
 
+  const provider = getProviderHealth();
+  const selected = Object.values(provider).find((item) => item.selectedModel);
+  const dashboard = createDashboardStore(process.env, error);
+  const reviewRecord = {
+    repository: repo.name, fullName: repo.full_name || `${repo.owner.login}/${repo.name}`,
+    prNumber: pr.number, prTitle: pr.title, headSha: pr.head?.sha, baseSha: pr.base?.sha,
+    commitUrl: pr.head?.sha ? `https://github.com/${repo.owner.login}/${repo.name}/commit/${pr.head.sha}` : null,
+    summary: review.summary, score: review.score, verdict: review.verdict,
+    provider: selected?.provider || null, model: selected?.selectedModel || null, deliveryId,
+    status: "processing", createdAt: new Date().toISOString(), findings: review.issues,
+  };
+
   log("Applying GitHub review outputs");
 
-  await createInlineReviewComments({
-    octokit,
-    repo,
-    pr,
-    issues: review.issues,
-    logger: log,
-  });
-
-  await applyReviewLabels({
-    octokit,
-    repo,
-    pr,
-    hasHigh,
-    hasMedium,
-    logger: log,
-  });
-
-  await createCommitStatus({
-    octokit,
-    repo,
-    pr,
-    hasHigh,
-    logger: log,
-  });
-
-  try {
-    await createSummaryComment({ octokit, repo, pr, review });
-  } catch (err) {
-    error(`Summary comment failed: ${err.message}`);
+  const failures = [];
+  for (const [name, action] of [
+    ["inline comments", () => createInlineReviewComments({ octokit, repo, pr, issues: review.issues, logger: log })],
+    ["labels", () => applyReviewLabels({ octokit, repo, pr, hasHigh, hasMedium, logger: log })],
+    ["commit status", () => createCommitStatus({ octokit, repo, pr, hasHigh, logger: log })],
+    ["summary", () => createSummaryComment({ octokit, repo, pr, review })],
+  ]) {
+    try { await action(); } catch (err) {
+      // Review comments/labels/summary are the user-visible result. A missing
+      // optional commit-status permission must not discard an otherwise valid
+      // review or turn the webhook into a retry storm.
+      if (name !== "commit status") failures.push(name);
+      error(`${name} failed: ${err.message}`);
+    }
   }
+  reviewRecord.status = failures.length ? "failed" : "completed";
+  await dashboard.persistReview(reviewRecord);
+  for (const finding of review.issues) await dashboard.persistFinding({ ...reviewRecord, findings: [finding] });
+  if (failures.length) return res.text(`PR review incomplete: ${failures.join(", ")}`, 502);
 
   log("PR review complete");
   return res.text("OK");
 }
 
-async function handlePullRequestComment({ body, res, log, error }) {
+async function handlePullRequestComment({ body, res, log, error, deliveryId }) {
   const comment = body.comment;
   const pr = body.issue;
   const repo = body.repository;
@@ -350,14 +427,37 @@ async function handlePullRequestComment({ body, res, log, error }) {
     body: `## 🤖 AI ${command.replace("/", "").replace("-", " ").toUpperCase()}\n\n${content}`,
   });
 
+  await createDashboardStore(process.env, error).persistIssue({
+    repository: repo.name, fullName: repo.full_name || `${repo.owner.login}/${repo.name}`,
+    issueNumber: pr.number, issueTitle: pr.title, summary: content.slice(0, 2000), response: content,
+    provider: Object.values(getProviderHealth()).find((item) => item.selectedModel)?.provider || null,
+    model: Object.values(getProviderHealth()).find((item) => item.selectedModel)?.selectedModel || null,
+    deliveryId, status: "completed", createdAt: new Date().toISOString(), command,
+  });
+
   return res.text("OK");
 }
 
-export default async ({ req, res, log, error }) => {
+export function createWebhookHandler({ makeClient = createGitHubClient, makeStore = createDashboardStore, makeService = createPatchService, makePlan = createIssuePlan, renderPlan = renderIssuePlanMarkdown, makeDeliveryStore = createDeliveryStore } = {}) { return async ({ req, res, log, error }) => {
+  let deliveryStore;
+  let deliveryId;
+  let ownerToken;
   try {
     log("Webhook received");
 
-    const body = parseRequestBody(req, error);
+    const isValidSignature = verifyWebhookSignature({
+      headers: req.headers,
+      bodyRaw: req.bodyRaw ?? req.bodyText,
+    });
+    if (!isValidSignature) {
+      error("Webhook signature validation failed");
+      return res.text("Invalid signature", 401);
+    }
+
+    const rawBody = req.bodyJson && typeof req.bodyJson === "object" ? req.bodyJson : (req.bodyText || req.bodyRaw || "");
+    let body;
+    try { body = req.bodyJson && typeof req.bodyJson === "object" ? req.bodyJson : (rawBody ? JSON.parse(Buffer.isBuffer(rawBody) ? rawBody.toString("utf8") : rawBody) : {}); }
+    catch { return res.text("Malformed payload", 400); }
 
     const event =
       getHeader(req.headers, "x-github-event") ||
@@ -365,26 +465,56 @@ export default async ({ req, res, log, error }) => {
 
     log(`GitHub event: ${event || "missing"}`);
 
+    const actionable = (event === "pull_request" && ["opened", "synchronize"].includes(body.action)) ||
+      (event === "issues" && body.action === "opened") ||
+      (event === "issue_comment" && body.action === "created");
+    if (actionable && !getHeader(req.headers, "x-github-delivery")) return res.text("Missing delivery ID", 400);
+    if (actionable && ((event === "pull_request" && (!body.pull_request || !body.repository || !body.installation?.id)) || (event === "issues" && (!body.issue || !body.repository || !body.installation?.id)) || (event === "issue_comment" && (!body.comment || !body.issue || !body.repository || !body.installation?.id)))) return res.text("Invalid payload", 400);
+    if (actionable) {
+      try {
+         deliveryStore = makeDeliveryStore();
+        const claim = await deliveryStore.claim(getHeader(req.headers, "x-github-delivery"));
+        if (claim.state === "completed" || claim.state === "blocked") return res.text("Duplicate delivery", 200);
+        deliveryId = claim.id;
+        ownerToken = claim.ownerToken;
+      } catch (claimError) {
+        error("Delivery claim unavailable");
+        return res.text("Delivery claim unavailable", claimError.statusCode || 503);
+      }
+    }
+
     if (event === "pull_request") {
-      return await handlePullRequest({ body, req, res, log, error });
+       const result = await handlePullRequest({ body, req, res, log, error, deliveryId });
+      if (deliveryStore && result.status < 300) await deliveryStore.complete(deliveryId, ownerToken); else if (deliveryStore) await deliveryStore.release(deliveryId, ownerToken);
+      return result;
     }
 
     if (event === "issues") {
-      return await handleIssueOpened({ body, res, log, error });
+       const result = await handleIssueOpened({ body, res, log, error, deliveryId });
+      if (deliveryStore && result.status < 300) await deliveryStore.complete(deliveryId, ownerToken); else if (deliveryStore) await deliveryStore.release(deliveryId, ownerToken);
+      return result;
     }
 
     if (event === "issue_comment") {
       if (body.issue?.pull_request) {
-        return await handlePullRequestComment({ body, res, log, error });
+        const result = await handlePullRequestComment({ body, res, log, error, deliveryId });
+        if (deliveryStore && result.status < 300) await deliveryStore.complete(deliveryId, ownerToken); else if (deliveryStore) await deliveryStore.release(deliveryId, ownerToken);
+        return result;
       }
 
-      return await handleIssueComment({ body, res, log, error });
+       const result = await handleIssueComment({ body, res, log, error, deliveryId, makeClient, makeStore, makeService, makePlan, renderPlan });
+      if (deliveryStore && result.status < 300) await deliveryStore.complete(deliveryId, ownerToken); else if (deliveryStore) await deliveryStore.release(deliveryId, ownerToken);
+      return result;
     }
 
     log(`Skipping unsupported event: ${event || "missing"}`);
     return res.text("Ignored");
   } catch (err) {
     error(`Webhook crash: ${err.message}`);
-    return res.text("Error handled");
+    if (deliveryStore && deliveryId) {
+      try { await deliveryStore.release(deliveryId, ownerToken); } catch { /* preserve original failure */ }
+    }
+    return res.text("Error handled", 500);
   }
-};
+}; }
+export default createWebhookHandler();
