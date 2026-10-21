@@ -155,3 +155,22 @@ Date: 2026-10-21
 
 1. The marker implementation is deployed and locally covered, but the fresh production `/plan` run failed during generation, so production evidence currently confirms only the start marker. A later successful free-tier run is needed to observe both success markers remotely.
 2. Interactive authenticated dashboard verification remains blocked by the previously recorded built-in browser page-open timeout. Static dashboard checks and backend persistence-path checks pass.
+
+## Task 5 focused failure-path test follow-up
+
+Date: 2026-10-21
+
+### Focused test coverage
+
+- Added `/plan` provider/planner failure coverage asserting `PLAN_GENERATION_FAILED` without generation or persistence success markers.
+- Added bounded fallback-comment assertions proving raw provider errors, persistence errors, and private issue text are not included in the failure comment.
+- Added persistence failure coverage asserting `PLAN_PERSISTENCE_SUCCEEDED` is not emitted and the delivery is released for retry.
+- Production code was unchanged; the existing marker and safe fallback behavior passed these focused tests.
+
+### Verification
+
+- `node --test test/pr-handler.test.js` — 12 passed, 0 failed, 0 skipped.
+- `npm test` — 194 passed, 0 failed, 0 skipped.
+- `npm run check` — passed.
+- `npm run validate:config` — passed; 4 declared functions and 5 workflow entrypoints.
+- `npm run check:dashboard` — passed.

@@ -140,3 +140,64 @@ test("/plan emits bounded success markers without logging private plan data", as
   assert.deepEqual(comments, [{ owner: "owner", repo: "repo", issue_number: 33, body: "rendered plan" }]);
   assert.deepEqual(states, ["completed"]);
 });
+
+test("/plan provider failure emits only the bounded generation failure marker and safe fallback", async (t) => {
+  setup(t);
+  const logs = [];
+  const states = [];
+  const comments = [];
+  const issue = { number: 34, title: "Private issue title", body: "private issue body" };
+  const octokit = { issues: {
+    get: async () => ({ data: issue }),
+    createComment: async (args) => comments.push(args),
+  } };
+  const handler = createWebhookHandler({
+    makeClient: () => octokit,
+    makeStore: () => ({ persistPlan: async () => { throw new Error("PRIVATE_PERSISTENCE_ERROR"); } }),
+    makePlan: async () => { throw new Error("PRIVATE_PROVIDER_ERROR"); },
+    makeDeliveryStore: () => ({ claim: async () => ({ id: "delivery", ownerToken: "token" }), complete: async () => states.push("completed"), release: async () => states.push("released") }),
+  });
+  const body = { ...metadata, action: "created", issue, comment: { body: "/plan", user: { type: "User", login: "alice" } } };
+  const bodyRaw = JSON.stringify(body);
+  const signature = `sha256=${crypto.createHmac("sha256", "test-secret").update(bodyRaw).digest("hex")}`;
+  const result = await handler({ req: { headers: { "x-github-event": "issue_comment", "x-github-delivery": "delivery", "x-hub-signature-256": signature }, bodyRaw }, res: { text: (value, status = 200) => ({ body: value, status }) }, log: (message) => logs.push(message), error: (message) => logs.push(`error:${message}`) });
+
+  assert.deepEqual(result, { body: "Plan unavailable", status: 502 });
+  assert.deepEqual(logs.filter((message) => message.includes("PLAN_")), ["PLAN_GENERATION_STARTED", "error:PLAN_GENERATION_FAILED"]);
+  assert.equal(logs.some((message) => message.includes("PRIVATE_PROVIDER_ERROR") || message.includes("PRIVATE_PERSISTENCE_ERROR")), false);
+  assert.equal(comments.length, 1);
+  assert.equal(comments[0].body, "## PRISM implementation plan\n\nPlan generation is temporarily unavailable. No repository files were changed.");
+  assert.equal(comments[0].body.includes("PRIVATE_PROVIDER_ERROR"), false);
+  assert.equal(comments[0].body.includes("Private issue title"), false);
+  assert.deepEqual(states, ["released"]);
+});
+
+test("/plan persistence failure does not emit the persistence success marker", async (t) => {
+  setup(t);
+  const logs = [];
+  const states = [];
+  const comments = [];
+  const issue = { number: 35, title: "Example issue", body: "public issue body" };
+  const octokit = { issues: {
+    get: async () => ({ data: issue }),
+    listComments: async () => ({ data: [] }),
+    createComment: async (args) => comments.push(args),
+  } };
+  const handler = createWebhookHandler({
+    makeClient: () => octokit,
+    makeStore: () => ({ persistPlan: async () => { throw new Error("PRIVATE_PERSISTENCE_ERROR"); } }),
+    makePlan: async () => ({ createdAt: "2026-10-21T00:00:00.000Z", issueRevision: "sha", summary: "private plan summary" }),
+    renderPlan: () => "rendered plan",
+    makeDeliveryStore: () => ({ claim: async () => ({ id: "delivery", ownerToken: "token" }), complete: async () => states.push("completed"), release: async () => states.push("released") }),
+  });
+  const body = { ...metadata, action: "created", issue, comment: { body: "/plan", user: { type: "User", login: "alice" } } };
+  const bodyRaw = JSON.stringify(body);
+  const signature = `sha256=${crypto.createHmac("sha256", "test-secret").update(bodyRaw).digest("hex")}`;
+  const result = await handler({ req: { headers: { "x-github-event": "issue_comment", "x-github-delivery": "delivery", "x-hub-signature-256": signature }, bodyRaw }, res: { text: (value, status = 200) => ({ body: value, status }) }, log: (message) => logs.push(message), error: (message) => logs.push(`error:${message}`) });
+
+  assert.deepEqual(result, { body: "Error handled", status: 500 });
+  assert.deepEqual(logs.filter((message) => message.startsWith("PLAN_")), ["PLAN_GENERATION_STARTED", "PLAN_GENERATION_SUCCEEDED"]);
+  assert.equal(logs.some((message) => message.includes("PLAN_PERSISTENCE_SUCCEEDED")), false);
+  assert.deepEqual(comments, [{ owner: "owner", repo: "repo", issue_number: 35, body: "rendered plan" }]);
+  assert.deepEqual(states, ["released"]);
+});
