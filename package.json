@@ -4,7 +4,11 @@
   "description": "",
   "main": "functions/health-check/src/main.js",
   "scripts": {
-    "check": "node --check functions/github-pr-review/src/main.js && node --check functions/github-profile-insights/src/main.js && node --check functions/health-check/src/main.js && node --check shared/lib/llm.js && node --check shared/lib/github.js && node --check shared/lib/prompts.js && node --check shared/lib/parser.js"
+    "check": "node --check functions/github-pr-review/src/main.js && node --check functions/github-profile-insights/src/main.js && node --check functions/health-check/src/main.js && node --check functions/github-dashboard/src/main.js && node --check shared/lib/llm.js && node --check shared/lib/github.js && node --check shared/lib/bounded.js && node --check shared/lib/delivery-store.js && node --check shared/lib/dashboard-store.js && node --check shared/lib/request-validation.js && node --check shared/lib/prompts.js && node --check shared/lib/planner.js && node --check shared/lib/parser.js && node --check shared/lib/patcher.js && node --check shared/lib/patch-service.js && node --check shared/lib/patch-workspace.js && node --check dashboard/app.js && node --check dashboard/appwrite.js && node --check dashboard/patch-ui.js && node --check dashboard/render-state.js && node --check dashboard/config.js",
+    "test": "node scripts/run-tests.mjs",
+    "validate:config": "node scripts/validate-config.js",
+    "preview:architecture": "node scripts/preview-architecture.js",
+    "check:dashboard": "node scripts/check-dashboard.mjs"
   },
   "keywords": [],
   "author": "",
