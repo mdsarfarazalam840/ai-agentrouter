@@ -36,3 +36,13 @@
 - `node --check shared/lib/planner.js` — PASS.
 - `node --check shared/lib/dashboard-store.js` — PASS.
 - `node --check functions/github-pr-review/src/main.js` — PASS.
+
+## Quality-gate fixture refresh
+
+- Updated `test/dashboard-store.test.js` round-trip fixture to provide meaningful `implementationSteps` and `testPlan` required by the minimum viable plan contract, while asserting the stored normalized plan round-trips unchanged.
+
+### Verification
+
+- `node --test test/dashboard-store.test.js` — PASS (10 tests, 10 passed, 0 failed).
+- `npm test` — PASS (183 tests, 183 passed, 0 failed).
+- `npm run check` — PASS (all configured `node --check` syntax checks completed successfully).
