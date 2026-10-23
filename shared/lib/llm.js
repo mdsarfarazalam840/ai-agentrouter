@@ -1,185 +1,259 @@
 import OpenAI from "openai";
 
 const NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1";
-// const NVIDIA_MODEL = "z-ai/glm4.7";
-const NVIDIA_MODELS = {
-  weekly: [
-    "meta/llama-3.2-3b-instruct",
-    "google/gemma-2-2b-it",
-    "nvidia/nemotron-mini-4b-instruct",
-    "microsoft/phi-4-mini-instruct"
-  ],
-
-  review: [
-    "meta/llama-3.1-8b-instruct",
-    "google/gemma-3-4b-it",
-    "nvidia/nvidia-nemotron-nano-9b-v2",
-    "microsoft/phi-4-mini-instruct"
-  ],
-
-  pr_review: [
-    "meta/llama-3.1-8b-instruct",
-    "deepseek-ai/deepseek-coder-6.7b-instruct",
-    "qwen/qwen2.5-coder-32b-instruct",
-    "google/codegemma-7b"
-  ],
-
-  fallback: [
-    "meta/llama-3.2-3b-instruct",
-    "google/gemma-2-2b-it"
-  ]
+const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
+const DEFAULT_TOTAL_TIMEOUT_MS = 45000;
+const DEFAULT_ATTEMPT_TIMEOUT_MS = 12000;
+const DEFAULT_HEALTH_PROBE_TIMEOUT_MS = 3000;
+const DEFAULT_CACHE_SECONDS = 900;
+const PROVIDERS = ["nvidia", "openrouter"];
+const EMERGENCY_MODELS = {
+  nvidia: {
+    weekly: ["meta/llama-3.2-3b-instruct", "google/gemma-2-2b-it", "nvidia/nemotron-mini-4b-instruct", "microsoft/phi-4-mini-instruct"],
+    review: ["meta/llama-3.1-8b-instruct", "google/gemma-3-4b-it", "nvidia/nvidia-nemotron-nano-9b-v2", "microsoft/phi-4-mini-instruct"],
+    pr_review: ["meta/llama-3.1-8b-instruct", "deepseek-ai/deepseek-coder-6.7b-instruct", "qwen/qwen2.5-coder-32b-instruct", "google/codegemma-7b"],
+    fallback: ["meta/llama-3.2-3b-instruct", "google/gemma-2-2b-it"],
+  },
+  openrouter: { fallback: ["meta-llama/llama-3.1-8b-instruct:free"] },
 };
 
-function resolveModel(task = "review") {
-  const candidates = NVIDIA_MODELS[task] || NVIDIA_MODELS.review;
-  return candidates[0];
-}
+const catalogCache = new Map();
+const health = {
+  nvidia: { provider: "nvidia", configured: false, catalogStatus: "unavailable", discoveredCount: 0, selectedModel: null, lastFailureCategory: null, updatedAt: null },
+  openrouter: { provider: "openrouter", configured: false, catalogStatus: "unavailable", discoveredCount: 0, selectedModel: null, lastFailureCategory: null, updatedAt: null },
+};
 
-function createClient(options = {}) {
-  const timeout = options.providerTimeoutMs || 30000;
+function now() { return new Date().toISOString(); }
+function cacheSeconds() { const value = Number(process.env.AI_MODEL_CACHE_SECONDS); return Number.isFinite(value) && value >= 0 ? value : DEFAULT_CACHE_SECONDS; }
+function modelMode() { return String(process.env.AI_MODEL_MODE || "dynamic").toLowerCase() === "fixed" ? "fixed" : "dynamic"; }
+function timeoutMs(options = {}) { return Math.max(1, Math.min(Number(options.providerTimeoutMs) || Number(process.env.AI_PROVIDER_TIMEOUT_MS) || DEFAULT_ATTEMPT_TIMEOUT_MS, 20000)); }
+function healthProbeTimeoutMs(options = {}) { return Math.max(1, Math.min(Number(options.timeoutMs) || Number(process.env.AI_HEALTH_PROBE_TIMEOUT_MS) || DEFAULT_HEALTH_PROBE_TIMEOUT_MS, 5000)); }
+function configured(provider) { return provider === "nvidia" ? Boolean(process.env.NVIDIA_API_KEY) : Boolean(process.env.OPENROUTER_API_KEY); }
+function emergencyModels(provider, task) { return EMERGENCY_MODELS[provider]?.[task] || (provider === "nvidia" && task === "issue_plan" ? [] : EMERGENCY_MODELS[provider]?.fallback || []); }
 
-  return new OpenAI({
-    apiKey: process.env.NVIDIA_API_KEY || "missing-nvidia-api-key",
-    baseURL: NVIDIA_BASE_URL,
-    timeout,
-    maxRetries: 0,
-  });
-}
-
-
-async function runWithModelFallback(messages, options = {}) {
-  const logger = typeof options.errorLogger === "function" ? options.errorLogger : console.error;
-  const models = NVIDIA_MODELS[options.task] || NVIDIA_MODELS.review;
-
-  let lastError = null;
-
-  for (const model of models) {
-    try {
-      const modelOptions = {
-        ...options,
-        model,
-        providerTimeoutMs:
-          options.task === "weekly"
-            ? 4000
-            : options.providerTimeoutMs,
-      };
-
-      return await runCompletion(messages, modelOptions);
-    } catch (err) {
-      lastError = err;
-      logger(`[LLM] NVIDIA model failed: ${model} -> ${err.message}`);
+function syncProviderConfiguration() {
+  for (const provider of PROVIDERS) {
+    const isConfigured = configured(provider);
+    if (!isConfigured) {
+      health[provider].catalogStatus = "unavailable";
+      health[provider].discoveredCount = 0;
+      health[provider].selectedModel = null;
+      health[provider].lastFailureCategory = null;
+      health[provider].updatedAt = null;
     }
+    health[provider].configured = isConfigured;
   }
-
-  throw lastError || new Error("LLM_UNAVAILABLE");
+}
+function isFreeOpenRouterModel(model, discovered = []) {
+  const entry = typeof model === "string" ? null : model;
+  const normalized = String(entry?.id || model || "").toLowerCase();
+  const freeById = normalized === "openrouter/free" || normalized.endsWith(":free");
+  const pricing = entry?.pricing;
+  const freeByEntry = Number(pricing?.prompt) === 0 && Number(pricing?.completion) === 0;
+  const freeByCatalog = discovered.some((candidate) => String(candidate.id || "").toLowerCase() === normalized && Number(candidate.pricing?.prompt) === 0 && Number(candidate.pricing?.completion) === 0);
+  return freeById || freeByEntry || freeByCatalog;
+}
+function isCompatibleConfiguredModel(provider, model, task, discovered = []) {
+  if (provider === "openrouter" && process.env.AI_ALLOW_PAID_MODELS !== "true") {
+    if (!isFreeOpenRouterModel(model, discovered)) return false;
+  }
+  return isTaskCompatible({ id: model }, task);
 }
 
+function isTaskCompatible(model, task) {
+  const id = String(model.id || "").toLowerCase();
+  if (!id || /embedding|embedqa|rerank|moderation|whisper|tts|speech|image-generation|guardrail|safety-guard|vision|translate/.test(id)) return false;
+  if (model.architecture?.modality && !/text.*text|text->text/.test(String(model.architecture.modality).toLowerCase())) return false;
+  if (Array.isArray(model.input_modalities) && !model.input_modalities.includes("text")) return false;
+  if (Array.isArray(model.output_modalities) && !model.output_modalities.includes("text")) return false;
+  if (Number(model.context_length || model.context_window || 0) > 0 && Number(model.context_length || model.context_window) < 1024) return false;
+  return task !== "pr_review" || !/embedding|rerank/.test(id);
+}
 
+export function filterCatalogModels(provider, entries = [], task = "review") {
+  const allowPaid = process.env.AI_ALLOW_PAID_MODELS === "true";
+  return entries.filter((model) => {
+    if (!isTaskCompatible(model, task)) return false;
+    if (provider !== "openrouter" || allowPaid) return true;
+    const id = String(model.id || "").toLowerCase();
+    const pricing = model.pricing || {};
+    const zero = Number(pricing.prompt) === 0 && Number(pricing.completion) === 0;
+    return id === "openrouter/free" || id.endsWith(":free") || zero;
+  }).map((model) => model.id).filter(Boolean);
+}
+
+function configuredModels(provider) {
+  const name = provider === "nvidia" ? "AI_NVIDIA_MODELS" : "AI_OPENROUTER_MODELS";
+  const values = String(process.env[name] || "").split(",").map((model) => model.trim()).filter(Boolean);
+  return [...new Set(values)];
+}
+
+function rankModels(models, task) {
+  const terms = task === "pr_review" ? ["coder", "code", "deepseek", "qwen"] : task === "weekly" ? ["small", "mini", "3b", "7b"] : ["instruct", "chat", "llama", "gemma"];
+  return [...new Set(models)].sort((a, b) => terms.reduce((n, term) => n + (a.toLowerCase().includes(term) ? 1 : 0), 0) < terms.reduce((n, term) => n + (b.toLowerCase().includes(term) ? 1 : 0), 0) ? 1 : -1);
+}
+
+export function selectModels(provider, task, discovered = []) {
+  const entries = discovered.map((model) => typeof model === "string" ? { id: model } : model).filter((model) => model?.id);
+  const eligibleEntries = entries.filter((model) => isTaskCompatible(model, task) && (provider !== "openrouter" || process.env.AI_ALLOW_PAID_MODELS === "true" || isFreeOpenRouterModel(model)));
+  const configured = rankModels(configuredModels(provider).filter((model) => isCompatibleConfiguredModel(provider, model, task, entries)), task);
+  return configured.length ? configured : rankModels(eligibleEntries.map((model) => model.id), task);
+}
+
+async function discoverCatalog(provider, task, signal) {
+  const key = `${provider}:${task}:paid=${process.env.AI_ALLOW_PAID_MODELS === "true"}`;
+  const hit = catalogCache.get(key);
+  if (hit && (Date.now() - hit.updated) < cacheSeconds() * 1000) {
+    health[provider].catalogStatus = "ok";
+    health[provider].discoveredCount = hit.models.length;
+    health[provider].updatedAt = now();
+    return hit.models;
+  }
+  const apiKey = provider === "nvidia" ? process.env.NVIDIA_API_KEY : process.env.OPENROUTER_API_KEY;
+  try {
+    const response = await fetch(`${provider === "nvidia" ? NVIDIA_BASE_URL : OPENROUTER_BASE_URL}/models`, { headers: { Authorization: `Bearer ${apiKey}` }, signal });
+    if (!response.ok) throw Object.assign(new Error("catalog unavailable"), { status: response.status });
+    const body = await response.json();
+    const entries = Array.isArray(body.data) ? body.data : [];
+    const allowed = new Set(filterCatalogModels(provider, entries, task));
+    const models = entries.filter((model) => allowed.has(model.id));
+    if (!models.length) throw new Error("catalog empty");
+    catalogCache.set(key, { updated: Date.now(), models });
+    health[provider].catalogStatus = "ok";
+    health[provider].discoveredCount = models.length;
+    health[provider].updatedAt = now();
+    return models;
+  } catch (error) {
+    health[provider].catalogStatus = "fallback";
+    health[provider].updatedAt = now();
+    return hit?.models || [];
+  }
+}
+
+export function resetProviderCatalogCache() { catalogCache.clear(); }
+export function getProviderHealth() { syncProviderConfiguration(); return JSON.parse(JSON.stringify(health)); }
+
+// Health checks intentionally stop at provider catalog access. They do not send
+// prompts or consume a model generation, and only return safe metadata.
+export async function probeProviderHealth(options = {}) {
+  syncProviderConfiguration();
+  const task = typeof options.task === "string" && options.task ? options.task : "review";
+  await Promise.all(PROVIDERS.map(async (provider) => {
+    if (!health[provider].configured) return;
+    if (modelMode() === "fixed") {
+      const selected = selectModels(provider, task, [])[0] || null;
+      health[provider].catalogStatus = selected ? "configured" : "unavailable";
+      health[provider].selectedModel = selected;
+      health[provider].discoveredCount = 0;
+      health[provider].updatedAt = now();
+      return;
+    }
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), healthProbeTimeoutMs(options));
+    try {
+      const discovered = await discoverCatalog(provider, task, controller.signal);
+      const selected = selectModels(provider, task, discovered)[0] || emergencyModels(provider, task)[0] || null;
+      health[provider].selectedModel = selected;
+      health[provider].catalogStatus = health[provider].catalogStatus === "ok" && discovered.length && selected ? "ok" : selected ? "fallback" : "unavailable";
+      health[provider].discoveredCount = health[provider].catalogStatus === "ok" ? discovered.length : 0;
+      health[provider].updatedAt = now();
+    } catch {
+      const selected = emergencyModels(provider, task)[0] || null;
+      health[provider].catalogStatus = selected ? "fallback" : "unavailable";
+      health[provider].selectedModel = selected;
+      health[provider].discoveredCount = 0;
+      health[provider].updatedAt = now();
+    } finally {
+      clearTimeout(timer);
+    }
+  }));
+  return getProviderHealth();
+}
+
+function createClient(provider, options = {}) {
+  const isOpenRouter = provider === "openrouter";
+  return new OpenAI({ apiKey: isOpenRouter ? process.env.OPENROUTER_API_KEY : process.env.NVIDIA_API_KEY, baseURL: isOpenRouter ? OPENROUTER_BASE_URL : NVIDIA_BASE_URL, timeout: timeoutMs(options), maxRetries: 0 });
+}
 function buildCompletionOptions(messages, options = {}) {
-  const completionOptions = {
-    model: options.model || resolveModel(options.task),
-    messages,
-  };
-
-  if (options.temperature !== undefined) completionOptions.temperature = options.temperature;
-  if (options.top_p !== undefined) completionOptions.top_p = options.top_p;
-  if (options.max_tokens !== undefined) completionOptions.max_tokens = options.max_tokens;
-
-  if (options.enableThinking !== false) {
-    completionOptions.extra_body = {
-      chat_template_kwargs: {
-        enable_thinking: true,
-        clear_thinking: false,
-      },
-    };
-  }
-
-  return completionOptions;
+  const result = { model: options.model, messages };
+  for (const key of ["temperature", "top_p", "max_tokens"]) if (options[key] !== undefined) result[key] = options[key];
+  if (options.responseFormat && !(options.provider === "openrouter" && (options.model === "openrouter/free" || options.model.endsWith(":free")))) result.response_format = options.responseFormat;
+  if (options.provider === "nvidia") result.chat_template_kwargs = { enable_thinking: options.enableThinking !== false, clear_thinking: false };
+  return result;
 }
-
 function getAssistantContent(response) {
-  const choice = response?.choices?.[0];
-  if (!choice) return "";
-
-  const message = choice.message || {};
+  const message = response?.choices?.[0]?.message || {};
   const content = message.content;
-
-  // Standard string content
-  if (typeof content === "string" && content.trim()) {
-    return content.trim();
-  }
-
-  // Array content blocks
-  if (Array.isArray(content)) {
-    const joined = content
-      .map((part) => {
-        if (typeof part === "string") return part;
-        if (part?.text) return part.text;
-        if (part?.type === "text" && part?.content) return part.content;
-        return "";
-      })
-      .join("")
-      .trim();
-
-    if (joined) return joined;
-  }
-
-  // NVIDIA / reasoning fallback
-  if (typeof message.reasoning_content === "string" && message.reasoning_content.trim()) {
-    return message.reasoning_content.trim();
-  }
-
-  // Streaming-style fallback
-  if (typeof choice?.delta?.content === "string" && choice.delta.content.trim()) {
-    return choice.delta.content.trim();
-  }
-
-  return "";
+  if (typeof content === "string") return content.trim();
+  if (Array.isArray(content)) return content.map((part) => typeof part === "string" ? part : part?.text || part?.content || "").join("").trim();
+  if (content && typeof content === "object") return String(content.text || content.content || content.value || "").trim();
+  if (typeof response?.choices?.[0]?.delta?.content === "string") return response.choices[0].delta.content.trim();
+  // NVIDIA's older response shape put the answer in reasoning_content. Preserve
+  // that compatibility, but never return it when the provider explicitly marks
+  // the field as internal reasoning.
+  const internal = message.reasoning_content_internal === true || message.reasoning?.internal === true || message.metadata?.reasoning_content === "internal";
+  return !internal && typeof message.reasoning_content === "string" ? message.reasoning_content.trim() : "";
 }
-
-function logProviderFailure(provider, err, logger = console.error) {
-  const status = err?.status ? ` status=${err.status}` : "";
-  const code = err?.code ? ` code=${err.code}` : "";
-  const message = err?.message || "Unknown provider failure";
-  logger(`[LLM] ${provider} failure:${status}${code} ${message}`);
-}
-
+function failureCategory(error) { if (error?.name === "AbortError" || error?.code === "ETIMEDOUT") return "timeout"; if (error?.status >= 400) return "upstream_http"; if (error?.code === "EMPTY_ASSISTANT_CONTENT") return "empty_response"; return "upstream_error"; }
 async function runCompletion(messages, options) {
-  const client = createClient(options);
-
-  const response = await client.chat.completions.create(
-    buildCompletionOptions(messages, options)
-  );
-
-
+  const response = await createClient(options.provider, options).chat.completions.create(buildCompletionOptions(messages, options), { signal: options.signal });
   const content = getAssistantContent(response);
-
   if (!content) {
-    throw new Error("nvidia returned empty assistant content");
+    const choice = response?.choices?.[0] || {};
+    const message = choice.message || {};
+    throw Object.assign(new Error("empty response"), {
+      code: "EMPTY_ASSISTANT_CONTENT",
+      responseShape: `choice=${Object.keys(choice).join(",")};message=${Object.keys(message).join(",")};contentType=${typeof message.content};contentKeys=${message.content && typeof message.content === "object" ? Object.keys(message.content).join(",") : ""};contentLength=${typeof message.content === "string" ? message.content.length : 0};reasoningLength=${typeof message.reasoning_content === "string" ? message.reasoning_content.length : 0};finish=${choice.finish_reason || "none"}`,
+    });
   }
-
   return content;
 }
-
-
-
-
-export async function callLLM(messages, options = {}) {
-  if (!Array.isArray(messages) || messages.length === 0) {
-    throw new Error("LLM_UNAVAILABLE");
-  }
-
-  const logger = typeof options.errorLogger === "function" ? options.errorLogger : console.error;
-
-  if (process.env.NVIDIA_API_KEY) {
-    try {
-      return await runWithModelFallback(messages, options);
-    } catch (err) {
-      logProviderFailure("NVIDIA NIM", err, logger);
-      throw new Error("LLM_UNAVAILABLE");
+async function runProvider(messages, provider, options, deadline) {
+  const task = options.task || "review";
+  const discovered = modelMode() === "fixed" ? [] : await discoverCatalog(provider, task, options.signal);
+  const emergency = EMERGENCY_MODELS[provider]?.[task] || (provider === "nvidia" && task === "issue_plan" ? [] : EMERGENCY_MODELS[provider]?.fallback || []);
+  const models = [...new Set([...selectModels(provider, task, discovered), ...emergency])];
+  let lastError;
+  for (const model of models) {
+    if (deadline - Date.now() <= 0) throw Object.assign(new Error("deadline"), { code: "LLM_TOTAL_TIMEOUT" });
+    health[provider].selectedModel = model;
+    health[provider].updatedAt = now();
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        const content = await runCompletion(messages, { ...options, provider, model, providerTimeoutMs: Math.min(timeoutMs(options), deadline - Date.now()) });
+        health[provider].lastFailureCategory = null;
+        health[provider].updatedAt = now();
+        if (typeof options.onInvocation === "function") options.onInvocation({ provider, model });
+        return content;
+      }
+      catch (error) {
+        lastError = error;
+        health[provider].lastFailureCategory = failureCategory(error);
+        health[provider].updatedAt = now();
+        if (typeof options.errorLogger === "function") options.errorLogger(`[LLM] ${provider} category=${failureCategory(error)} status=${Number.isFinite(error?.status) ? error.status : "none"} shape=${error?.code === "EMPTY_ASSISTANT_CONTENT" ? "empty_assistant" : "provider_error"}`);
+        if (error?.code !== "EMPTY_ASSISTANT_CONTENT") break;
+      }
     }
   }
+  throw lastError || new Error("provider unavailable");
+}
 
-  logger("[LLM] NVIDIA NIM skipped: NVIDIA_API_KEY is not configured");
-  throw new Error("LLM_UNAVAILABLE");
+export async function callLLM(messages, options = {}) {
+  if (!Array.isArray(messages) || !messages.length) throw new Error("LLM_UNAVAILABLE");
+  syncProviderConfiguration();
+  const logger = typeof options.errorLogger === "function" ? options.errorLogger : () => {};
+    const deadline = Date.now() + Math.max(1, Math.min(Number(options.totalTimeoutMs) || DEFAULT_TOTAL_TIMEOUT_MS, DEFAULT_TOTAL_TIMEOUT_MS));
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), Math.max(1, deadline - Date.now()));
+  const abortCaller = () => controller.abort(); options.signal?.addEventListener("abort", abortCaller, { once: true });
+  try {
+    for (const provider of ["nvidia", "openrouter"]) {
+      health[provider].configured = configured(provider);
+      if (!health[provider].configured) continue;
+      try { return await runProvider(messages, provider, { ...options, signal: controller.signal }, deadline); }
+      catch (error) { logger(`[LLM] ${provider} category=${failureCategory(error)} status=${Number.isFinite(error?.status) ? error.status : "none"} shape=provider_error`); }
+    }
+    throw Object.assign(new Error("LLM_UNAVAILABLE"), { code: "LLM_UNAVAILABLE", providerCategory: "configured_providers_unavailable" });
+  } finally { clearTimeout(timer); options.signal?.removeEventListener("abort", abortCaller); }
 }

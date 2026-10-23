@@ -1,6 +1,7 @@
 import { callLLM } from "../../../shared/lib/llm.js";
 import { buildProfilePrompt } from "../../../shared/lib/prompts.js";
 import { fetchGitHubProfile, fetchWeeklyRepoActivity } from "../../../shared/lib/github.js";
+import { hasAppwriteIdentity, hasProfileTestAuthorization, validateProfileInput } from "../../../shared/lib/request-validation.js";
 
 function parseRequestBody(req, logger) {
   const parseJson = (value) => {
@@ -45,9 +46,27 @@ function normalizeTask(task) {
   return allowedTasks.has(task) ? task : "review";
 }
 
-function buildFallbackInsights(task, profile) {
-  if (task === "weekly" && profile.weekly) {
-    const { repo, commits, issues, pulls } = profile.weekly;
+export function buildFallbackInsights(task, profile = {}, weeklyActivity = {}) {
+  if (task === "weekly") {
+    if (Array.isArray(weeklyActivity)) {
+      const rows = weeklyActivity.length
+        ? weeklyActivity.slice(0, 8).map((repo) =>
+            `| ${repo.name || "unknown"} | ${repo.commits || 0} | ${repo.prs || 0} | ${repo.issues || 0} | ${repo.stars || 0} | ${repo.language || "N/A"} | ${repo.pushed_at || "unknown"} |`
+          ).join("\n")
+        : "| No repositories | 0 | 0 | 0 | 0 | N/A | unknown |";
+
+      return `## 📊 Weekly GitHub Activity
+
+| Repository | Commits (7d) | PRs | Issues | Stars | Language | Last Push |
+|------------|--------------|-----|--------|-------|----------|-----------|
+${rows}
+
+## Next Focus
+- Review repositories with recent commits, issues, or pull requests.`;
+    }
+
+    const weekly = profile.weekly || weeklyActivity || {};
+    const { repo = {}, commits = [], issues = [], pulls = [] } = weekly;
     const commitLines = commits.length
       ? commits.slice(0, 5).map((commit) => `- ${commit.message} (${commit.author})`).join("\n")
       : "- No commits found in the last 7 days.";
@@ -96,26 +115,21 @@ export default async ({ req, res, log, error }) => {
   try {
     log("Profile insights request received");
 
-    const body = parseRequestBody(req, error);
-    const task = normalizeTask(String(body.task || "review").trim());
-    const username = String(body.username || "mdsarfarazalam840").trim();
-    const repository = String(body.repository || body.repo || "").trim();
-
-    if (!username) {
-      return res.json(
-        {
-          ok: false,
-          error: "username is required",
-        },
-        400
-      );
+    if (!hasAppwriteIdentity(req) && !hasProfileTestAuthorization(req)) {
+      return res.json({ ok: false, error: "authenticated Appwrite execution required" }, 401);
     }
+
+    const body = parseRequestBody(req, error);
+    const validation = validateProfileInput(body);
+    if (!validation.ok) return res.json({ ok: false, error: validation.error }, 400);
+    const { username, repository, task } = validation.value;
 
     let profile;
     let prompt;
+    let weeklyActivity;
 
     if (task === "weekly") {
-      const weeklyActivity = await fetchWeeklyRepoActivity(username);
+      weeklyActivity = await fetchWeeklyRepoActivity(username);
       prompt = buildProfilePrompt(task, { username, weeklyActivity });
     } else {
       profile = await fetchGitHubProfile(username);
@@ -155,15 +169,15 @@ export default async ({ req, res, log, error }) => {
         insights: content,
       });
     } catch (err) {
-      log(`AI insights unavailable from NVIDIA NIM: ${err.cause?.message || err.message}`);
-      const fallback = buildFallbackInsights(task, profile);
+      log(`AI insights unavailable from configured providers: ${err.cause?.message || err.message}`);
+      const fallback = buildFallbackInsights(task, profile, weeklyActivity);
       log(`PROFILE_INSIGHTS_OK ${JSON.stringify({ ok: true, username, task, ai: false, provider: "fallback" })}`);
       return res.json({
         ok: true,
         username,
         task,
         ai: false,
-        warning: "NVIDIA NIM unavailable or timed out. Returned basic profile snapshot.",
+        warning: "Configured AI providers unavailable or timed out. Returned basic profile snapshot.",
         insights: fallback,
       });
     }
@@ -174,7 +188,7 @@ export default async ({ req, res, log, error }) => {
         ok: false,
         error: "AI insights are temporarily unavailable.",
       },
-      200
+      502
     );
   }
 };

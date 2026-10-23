@@ -69,10 +69,30 @@ export function normalizeReview(review) {
     };
   }
 
+  const severity = new Set(["low", "medium", "high"]);
+  const type = new Set(["bug", "security", "performance", "style", "best-practice"]);
+  const bounded = (value, fallback, max = 1000) => typeof value === "string" ? value.slice(0, max) : fallback;
+  const issues = (Array.isArray(review.issues) ? review.issues : []).slice(0, 10).map((issue) => {
+    const item = issue && typeof issue === "object" ? issue : {};
+    const line = Number.isInteger(item.line) && item.line > 0 ? item.line : undefined;
+    return {
+      file: bounded(item.file, "", 300),
+      severity: severity.has(item.severity) ? item.severity : "low",
+      type: type.has(item.type) ? item.type : "best-practice",
+      title: bounded(item.title, "Review note", 300),
+      explanation: bounded(item.explanation, "No explanation returned."),
+      impact: bounded(item.impact, "No impact returned."),
+      suggestion: bounded(item.suggestion, "No suggestion returned."),
+      example_fix: bounded(item.example_fix, "", 2000),
+      ...(line === undefined ? {} : { line }),
+    };
+  });
+  const rawScore = Number(review.score);
+  const score = Number.isFinite(rawScore) ? Math.max(0, Math.min(10, rawScore)) : 0;
   return {
-    summary: review.summary || "No summary returned.",
-    issues: Array.isArray(review.issues) ? review.issues : [],
-    score: review.score || "0",
+    summary: bounded(review.summary, "No summary returned.", 2000),
+    issues,
+    score,
     verdict: review.verdict === "request_changes" ? "request_changes" : "approve",
   };
 }

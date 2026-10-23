@@ -1,0 +1,30 @@
+{
+    "projectName": "AI Agent Router Backend B",
+    "endpoint": "https://fra.cloud.appwrite.io/v1",
+    "functions": [
+        {
+            "$id": "APPWRITE_FUNCTION_GITHUB_DASHBOARD_ID",
+            "name": "github-dashboard",
+            "runtime": "node-22",
+            "path": ".",
+            "entrypoint": "functions/github-dashboard/src/main.js",
+            "execute": ["users"],
+            "enabled": true,
+            "logging": true,
+            "timeout": 30,
+            "commands": "npm ci"
+        },
+        {
+            "$id": "APPWRITE_FUNCTION_HEALTH_CHECK_ID",
+            "name": "health-check",
+            "runtime": "node-20",
+            "path": ".",
+            "entrypoint": "functions/health-check/src/main.js",
+            "execute": ["any"],
+            "enabled": true,
+            "logging": true,
+            "timeout": 15,
+            "commands": "npm ci"
+        }
+    ]
+}
