@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { createHash } from "node:crypto";
 import { normalizePatch, validatePatch } from "../shared/lib/patcher.js";
+import { createValidationBundle } from "../shared/lib/validation-bundle.js";
 
 const exec = promisify(execFile);
 
@@ -29,5 +30,4 @@ const diff = `diff --git a/${filePath} b/${filePath}\nnew file mode 100644\n--- 
 const patch = normalizePatch({ summary: "Dynamic GitHub-hosted runner smoke validation", files: [{ path: filePath, operation: "add", reason: "runner smoke fixture", additions: diffLines.length, deletions: 0 }], diff, implementationNotes: ["Generated only for the disposable runner smoke test"], risks: [], testCommand }, { issueRevision: "runner-smoke", planRevision: "runner-smoke", snapshotRevision: snapshot.revision, provider: null, model: null, createdAt: new Date().toISOString() });
 const validation = validatePatch(patch, snapshot);
 if (!validation.ok) throw new Error(validation.error);
-const bundle = { version: 1, targetSha, patch, snapshot };
-process.stdout.write(Buffer.from(JSON.stringify(bundle), "utf8").toString("base64url"));
+process.stdout.write(createValidationBundle({ targetSha, patch, snapshot }));

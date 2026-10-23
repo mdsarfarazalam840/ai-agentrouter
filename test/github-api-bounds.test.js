@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { fetchPrDiff, fetchWeeklyRepoActivity, formatPlanningContext, listIssueComments } from "../shared/lib/github.js";
+import { dispatchApprovedPatchValidation, fetchPrDiff, fetchWeeklyRepoActivity, formatPlanningContext, getApprovedPatchValidationRun, listIssueComments } from "../shared/lib/github.js";
 
 test("diff responses are capped before they can grow unbounded", async (t) => {
   t.mock.method(globalThis, "fetch", async () => new Response("0123456789", { status: 200 }));
@@ -64,4 +64,23 @@ test("issue comment pagination reaches markers beyond the first page", async () 
 test("issue comment pagination fails closed at the bounded page limit", async () => {
   const octokit = { issues: { listComments: async () => ({ data: Array.from({ length: 100 }, () => ({})) }) } };
   await assert.rejects(() => listIssueComments({ octokit, owner: "owner", repo: "repo", issueNumber: 1, maxPages: 2 }), /ISSUE_COMMENTS_TOO_LARGE/);
+});
+
+test("approved patch validation dispatch carries only the bounded broker payload", async () => {
+  let payload;
+  const octokit = { repos: { createDispatchEvent: async (input) => { payload = input; } } };
+  const result = await dispatchApprovedPatchValidation({ octokit, owner: "owner", repo: "repo", targetSha: "a".repeat(40), patchBundleB64: "bundle", testCommand: "npm test", correlationId: "patch-abc" });
+  assert.deepEqual(result, { correlationId: "patch-abc", targetSha: "a".repeat(40) });
+  assert.deepEqual(payload, { owner: "owner", repo: "repo", event_type: "approved-patch-validation", client_payload: { target_sha: "a".repeat(40), patch_bundle_b64: "bundle", test_command: "npm test", correlation_id: "patch-abc" } });
+});
+
+test("validation run lookup matches the opaque correlation id and bounded step state", async () => {
+  const octokit = { actions: {
+    listWorkflowRunsForRepo: async () => ({ data: { workflow_runs: [{ id: 9, name: "Approved patch validation · patch-abc", status: "completed", conclusion: "success", html_url: "https://github.com/owner/repo/actions/runs/9", head_sha: "a".repeat(40) }] } }),
+    listJobsForWorkflowRun: async () => ({ data: { jobs: [{ steps: [{ name: "Apply approved patch and run bounded validation", status: "completed", conclusion: "success" }] }] } }),
+  } };
+  const run = await getApprovedPatchValidationRun({ octokit, owner: "owner", repo: "repo", correlationId: "patch-abc" });
+  assert.equal(run.runId, 9);
+  assert.equal(run.conclusion, "success");
+  assert.equal(run.steps[0].conclusion, "success");
 });

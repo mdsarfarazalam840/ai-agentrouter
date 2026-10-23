@@ -3,6 +3,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { spawn } from "node:child_process";
 import { applyPatchInWorkspace } from "../shared/lib/patch-workspace.js";
+import { decodeValidationBundle } from "../shared/lib/validation-bundle.js";
 
 const MAX_OUTPUT_BYTES = 16384;
 const MAX_TIMEOUT_MS = 30000;
@@ -31,12 +32,7 @@ function sanitizeOutput(value) {
 
 export function decodeBundle(encoded) {
   if (typeof encoded !== "string" || !encoded.trim()) throw new Error("VALIDATION_BUNDLE_MISSING");
-  let bundle;
-  try { bundle = JSON.parse(Buffer.from(encoded.trim(), "base64url").toString("utf8")); }
-  catch { throw new Error("VALIDATION_BUNDLE_INVALID"); }
-  if (!bundle || typeof bundle !== "object" || !bundle.patch || !bundle.snapshot || typeof bundle.targetSha !== "string") throw new Error("VALIDATION_BUNDLE_INVALID");
-  if (!/^[a-f0-9]{40}$/i.test(bundle.targetSha) || bundle.snapshot.baseSha !== bundle.targetSha) throw new Error("VALIDATION_BUNDLE_SHA_MISMATCH");
-  return bundle;
+  return decodeValidationBundle(encoded);
 }
 
 function commandArgs(command) {

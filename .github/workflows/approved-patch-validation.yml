@@ -1,5 +1,7 @@
 name: Approved Patch Validation
 
+run-name: Approved patch validation · ${{ github.event.client_payload.correlation_id || inputs.correlation_id || github.run_id }}
+
 on:
   workflow_dispatch:
     inputs:

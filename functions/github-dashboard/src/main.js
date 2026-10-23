@@ -86,7 +86,7 @@ export function normalizeProviders(providers = {}) {
   }));
 }
 
-const ACTIONS = new Set(["overview", "health", "reviews", "review", "issues", "plan", "patch", "patch-history", "patch-validate", "patch-reject"]);
+const ACTIONS = new Set(["overview", "health", "reviews", "review", "issues", "plan", "patch", "patch-history", "patch-validate", "patch-validate-status", "patch-reject"]);
 const GITHUB_NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
 const GITHUB_FULL_NAME = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$/;
 function positiveNumber(value) {
@@ -159,7 +159,7 @@ export function createDashboardHandler({ makeStore = createDashboardStore, makeC
   const { action = "overview", repository, fullName, prNumber, issueNumber, limit, refresh } = params;
   try {
     if (action === "health") return res.json({ ...dashboardMetadata(), providers: normalizeProviders(await probeProviderHealth()) });
-    if (["patch", "patch-history", "patch-validate", "patch-reject"].includes(action)) {
+    if (["patch", "patch-history", "patch-validate", "patch-validate-status", "patch-reject"].includes(action)) {
       const name = fullName || repository;
       if (!name || !GITHUB_FULL_NAME.test(name) || !issueNumber) return res.json({ error: "Patch requires repository owner/name and issueNumber" }, 400);
        const denied = allowedRepositoryForUser(name, userId);
@@ -176,7 +176,7 @@ export function createDashboardHandler({ makeStore = createDashboardStore, makeC
       const service = makeService({ octokit: makeClient(process.env.GITHUB_APP_INSTALLATION_ID), store, logger: log });
       const args = { owner, repo, issueNumber: Number(issueNumber), patchId: params.patchId, patchRevision: params.patchRevision, approved: params.approved, refresh: refresh === true || refresh === "true" };
       try {
-        const result = action === "patch" ? await service.propose(args) : action === "patch-validate" ? await service.validate(args) : await service.reject(args);
+         const result = action === "patch" ? await service.propose(args) : action === "patch-validate" ? await service.validate(args) : action === "patch-validate-status" ? await service.validateStatus(args) : await service.reject(args);
         return res.json(result);
       } catch (error) { return res.json({ error: error.code && /^[A-Z_]+$/.test(error.code) ? error.code : "Patch unavailable" }, error.status && [400, 404, 409, 503].includes(error.status) ? error.status : 503); }
     }

@@ -57,12 +57,16 @@ function parsedDocument(document, kind) {
 function safeValidation(value) {
   if (!value || typeof value !== "object") return undefined;
   const result = {};
-  if (typeof value.status === "string" && /^(?:passed|failed|validated|validation_failed|test_failed|validation_unavailable|not_run)$/.test(value.status)) result.status = value.status;
+  if (typeof value.status === "string" && /^(?:passed|failed|validated|validation_failed|test_failed|validation_unavailable|validation_queued|validation_running|not_run)$/.test(value.status)) result.status = value.status;
   if (typeof value.passed === "boolean") result.passed = value.passed;
   if (typeof value.testsRun === "boolean") result.testsRun = value.testsRun;
-  if (typeof value.error === "string" && /^(?:TRUSTED_RUNNER_UNAVAILABLE|EMPTY_PATCH|APPROVAL_REQUIRED|INVALID_WORKSPACE_PATCH|INVALID_RUNNER_RESULT|TEST_TIMEOUT|VALIDATION_FAILED|INVALID_PATCH|INVALID_SUMMARY|INVALID_METADATA|INVALID_LIST|INVALID_STATUS|PATCH_REVISION_MISMATCH|INVALID_DIFF|INVALID_FILES|UNSAFE_PATCH_PATH|UNSUPPORTED_OPERATION|FILE_NOT_IN_SNAPSHOT|DIFF_TARGET_MISMATCH|TEST_COMMAND_NOT_ALLOWED|SNAPSHOT_REVISION_MISMATCH)$/.test(value.error)) result.error = value.error;
+  if (typeof value.error === "string" && /^(?:TRUSTED_RUNNER_UNAVAILABLE|EMPTY_PATCH|APPROVAL_REQUIRED|INVALID_WORKSPACE_PATCH|INVALID_RUNNER_RESULT|TEST_TIMEOUT|VALIDATION_FAILED|GITHUB_DISPATCH_FAILED|GITHUB_RUN_FAILED|GITHUB_RUN_LOOKUP_FAILED|GITHUB_RUN_NOT_FOUND|VALIDATION_BUNDLE_TOO_LARGE|VALIDATION_BUNDLE_INVALID|INVALID_PATCH|INVALID_SUMMARY|INVALID_METADATA|INVALID_LIST|INVALID_STATUS|PATCH_REVISION_MISMATCH|INVALID_DIFF|INVALID_FILES|UNSAFE_PATCH_PATH|UNSUPPORTED_OPERATION|FILE_NOT_IN_SNAPSHOT|DIFF_TARGET_MISMATCH|TEST_COMMAND_NOT_ALLOWED|SNAPSHOT_REVISION_MISMATCH)$/.test(value.error)) result.error = value.error;
   if (Number.isSafeInteger(value.exitCode) && value.exitCode >= 0 && value.exitCode <= 255) result.exitCode = value.exitCode;
   if (Number.isFinite(value.durationMs) && value.durationMs >= 0) result.durationMs = Math.min(value.durationMs, 3600000);
+  for (const [key, limit] of [["correlationId", 96], ["runUrl", 2000], ["targetSha", 40], ["command", 64], ["startedAt", 64], ["updatedAt", 64]]) {
+    if (typeof value[key] === "string" && value[key].length <= limit && (key !== "correlationId" || /^[A-Za-z0-9._-]+$/.test(value[key]))) result[key] = value[key];
+  }
+  if (Number.isSafeInteger(value.runId) && value.runId > 0) result.runId = value.runId;
   return result;
 }
 
@@ -137,8 +141,10 @@ export function createDashboardStore(env = process.env, logger = () => {}) {
     if (!c || !collections.issues) throw new Error(`${kind.toUpperCase()}_PERSISTENCE_UNAVAILABLE`);
     try {
       const data = envelopeData(input, kind, envelope);
-      const documentId = kind === "plan" ? deterministicPlanDocumentId(input, envelope.plan) || randomUUID() : randomUUID();
-      let document = await request(c, urlFor(c, collections.issues), { method: "POST", body: JSON.stringify({ documentId, data }) }, kind === "plan" ? [409] : []);
+      const documentId = input.documentId || (kind === "plan" ? deterministicPlanDocumentId(input, envelope.plan) || randomUUID() : randomUUID());
+      let document = input.documentId
+        ? await request(c, urlFor(c, collections.issues, `/${encodeURIComponent(documentId)}`), { method: "PATCH", body: JSON.stringify({ data }) })
+        : await request(c, urlFor(c, collections.issues), { method: "POST", body: JSON.stringify({ documentId, data }) }, kind === "plan" ? [409] : []);
       if (document.__status === 409) {
         const existing = await request(c, urlFor(c, collections.issues, `/${encodeURIComponent(documentId)}`));
         const parsed = parsedDocument(existing, kind);

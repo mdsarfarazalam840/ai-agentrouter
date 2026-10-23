@@ -155,6 +155,23 @@ test("patch writes only provisioned attributes and returns the persisted complet
   } finally { restore(); }
 });
 
+test("patch status synchronization updates the same Appwrite document", async () => {
+  const methods = [];
+  const restore = fixture(async (url, options) => {
+    methods.push({ url: String(url), method: options.method, body: JSON.parse(options.body) });
+    return json({ $id: "patch-1", ...methods.at(-1).body.data });
+  });
+  try {
+    const store = createDashboardStore(env);
+    const patch = { summary: "Change", patchRevision: "p1", issueRevision: "i1", planRevision: "l1", snapshotRevision: "s1", diff: "--- a/a\n+++ b/a", status: "validation_running" };
+    const result = await store.persistPatch({ documentId: "patch-1", repository: "org/repo", issueNumber: 7, patch, validation: { status: "validation_running", testsRun: false, correlationId: "patch-abc" } });
+    assert.equal(result.$id, "patch-1");
+    assert.equal(methods[0].method, "PATCH");
+    assert.match(methods[0].url, /\/documents\/patch-1$/);
+    assert.equal(JSON.parse(result.response).validation.status, "validation_running");
+  } finally { restore(); }
+});
+
 test("patch list filters canonical fullName, issue, revision and command with Appwrite queries", async () => {
   let queries;
   const restore = fixture(async (url) => {
