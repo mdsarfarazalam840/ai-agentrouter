@@ -11,6 +11,10 @@ test('available degraded providers remain usable and render DEGRADED', () => {
   });
 });
 
+test('configured providers are distinguishable from unavailable providers', () => {
+  assert.equal(providerPresentation({ provider: 'nvidia', configured: true, available: false, status: 'configured' }).statusLabel, 'CONFIGURED');
+});
+
 test('OpenRouter always exposes free-only fallback and safe failure category', () => {
   assert.equal(
     providerPresentation({ provider: 'openrouter', available: false, status: 'unavailable', freeOnly: true, lastFailureCategory: 'upstream_http' }).failureLabel,

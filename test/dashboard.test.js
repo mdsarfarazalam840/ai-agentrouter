@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import dashboard from "../functions/github-dashboard/src/main.js";
 import { flattenFindings, createDashboardHandler } from "../functions/github-dashboard/src/main.js";
+import { resetProviderCatalogCache } from "../shared/lib/llm.js";
 
 function invoke(req) {
   let result;
@@ -12,13 +13,14 @@ test("dashboard requires Appwrite identity headers", async () => {
   assert.equal((await invoke({ headers: {}, query: { action: "health" } })).status, 401);
 });
 
-test("dashboard health exposes provider metadata without secrets", async (t) => {
-  const old = { allow: process.env.DASHBOARD_ALLOWED_USER_IDS, nvidia: process.env.NVIDIA_API_KEY, openrouter: process.env.OPENROUTER_API_KEY, paid: process.env.AI_ALLOW_PAID_MODELS };
+test("dashboard health exposes configured provider metadata without secrets", async (t) => {
+  const old = { allow: process.env.DASHBOARD_ALLOWED_USER_IDS, nvidia: process.env.NVIDIA_API_KEY, openrouter: process.env.OPENROUTER_API_KEY, paid: process.env.AI_ALLOW_PAID_MODELS, mode: process.env.AI_MODEL_MODE };
   process.env.DASHBOARD_ALLOWED_USER_IDS = "user-1";
   process.env.NVIDIA_API_KEY = "nvidia-secret";
   process.env.OPENROUTER_API_KEY = "openrouter-secret";
   process.env.AI_ALLOW_PAID_MODELS = "false";
-  t.after(() => { for (const [key, value] of Object.entries({ DASHBOARD_ALLOWED_USER_IDS: old.allow, NVIDIA_API_KEY: old.nvidia, OPENROUTER_API_KEY: old.openrouter, AI_ALLOW_PAID_MODELS: old.paid })) value === undefined ? delete process.env[key] : process.env[key] = value; });
+  process.env.AI_MODEL_MODE = "fixed";
+  t.after(() => { for (const [key, value] of Object.entries({ DASHBOARD_ALLOWED_USER_IDS: old.allow, NVIDIA_API_KEY: old.nvidia, OPENROUTER_API_KEY: old.openrouter, AI_ALLOW_PAID_MODELS: old.paid, AI_MODEL_MODE: old.mode })) value === undefined ? delete process.env[key] : process.env[key] = value; });
   const response = await invoke({ headers: { "x-appwrite-user-id": "user-1", "x-appwrite-user-jwt": "jwt" }, query: { action: "health" } });
   assert.equal(response.status, 200);
   assert.equal(response.body.providers.nvidia.provider, "nvidia");
@@ -36,6 +38,33 @@ test("dashboard health exposes provider metadata without secrets", async (t) => 
   assert.equal(response.body.providers.openrouter.selectedModel, null);
   assert.equal(response.body.providers.openrouter.lastFailureCategory, null);
   assert.equal(JSON.stringify(response.body).includes("API_KEY"), false);
+});
+
+test("dashboard health probes catalogs without generation and reports ready/degraded safely", async (t) => {
+  const old = { allow: process.env.DASHBOARD_ALLOWED_USER_IDS, nvidia: process.env.NVIDIA_API_KEY, openrouter: process.env.OPENROUTER_API_KEY, paid: process.env.AI_ALLOW_PAID_MODELS, mode: process.env.AI_MODEL_MODE };
+  process.env.DASHBOARD_ALLOWED_USER_IDS = "user-1";
+  process.env.NVIDIA_API_KEY = "nvidia-secret";
+  process.env.OPENROUTER_API_KEY = "openrouter-secret";
+  process.env.AI_ALLOW_PAID_MODELS = "false";
+  process.env.AI_MODEL_MODE = "dynamic";
+  resetProviderCatalogCache();
+  const requests = [];
+  t.mock.method(globalThis, "fetch", async (input, options) => {
+    const url = typeof input === "string" ? input : input.url;
+    requests.push({ url, method: options?.method || "GET", body: options?.body });
+    if (url.includes("integrate.api.nvidia.com")) return new Response(JSON.stringify({ data: [{ id: "meta/llama-3.1-8b-instruct", context_length: 8192 }] }), { status: 200 });
+    return new Response("temporarily unavailable", { status: 503 });
+  });
+  t.after(() => { resetProviderCatalogCache(); for (const [key, value] of Object.entries({ DASHBOARD_ALLOWED_USER_IDS: old.allow, NVIDIA_API_KEY: old.nvidia, OPENROUTER_API_KEY: old.openrouter, AI_ALLOW_PAID_MODELS: old.paid, AI_MODEL_MODE: old.mode })) value === undefined ? delete process.env[key] : process.env[key] = value; });
+
+  const response = await invoke({ headers: { "x-appwrite-user-id": "user-1", "x-appwrite-user-jwt": "jwt" }, query: { action: "health" } });
+  assert.equal(response.status, 200);
+  assert.equal(response.body.providers.nvidia.status, "ready");
+  assert.equal(response.body.providers.nvidia.available, true);
+  assert.equal(response.body.providers.openrouter.status, "degraded");
+  assert.equal(response.body.providers.openrouter.available, true);
+  assert.equal(requests.every(({ url, body }) => url.endsWith("/models") && body === undefined), true);
+  assert.equal(JSON.stringify(response.body).includes("secret"), false);
 });
 
 test("dashboard health only reports ready after catalog and model health evidence", async () => {
@@ -161,6 +190,31 @@ test("plan rejects out-of-scope repositories before GitHub, store or model acces
   await handler({ req: { headers: { "x-appwrite-user-id": "user-1", "x-appwrite-user-jwt": "jwt" }, bodyJson: { action: "plan", repository: "owner/forbidden", issueNumber: 7 } }, res: { json: (body, status = 200) => (output = { body, status }) } });
   assert.deepEqual(output, { body: { error: "Repository forbidden" }, status: 403 });
   assert.equal(reads, 0);
+});
+
+test("per-user repository policy narrows the global dashboard allowlist", async (t) => {
+  const previous = Object.fromEntries(["DASHBOARD_ALLOWED_USER_IDS", "DASHBOARD_USER_REPOSITORIES", "GITHUB_PATCH_ALLOWED_REPOSITORIES"].map((key) => [key, process.env[key]]));
+  Object.assign(process.env, { DASHBOARD_ALLOWED_USER_IDS: "user-a,user-b", DASHBOARD_USER_REPOSITORIES: "user-a:owner/a|owner/shared;user-b:owner/b", GITHUB_PATCH_ALLOWED_REPOSITORIES: "owner/a,owner/b,owner/shared" });
+  t.after(() => { for (const [key, value] of Object.entries(previous)) value === undefined ? delete process.env[key] : process.env[key] = value; });
+  const handler = createDashboardHandler({ makeStore: () => ({ listPlans: async () => [], listIssues: async () => [], listReviews: async () => [], listFindings: async () => [], listDeliveries: async () => [] }), makeClient: () => { throw new Error("network must not run"); } });
+  const invoke = async (userId, repository) => {
+    let output;
+    await handler({ req: { headers: { "x-appwrite-user-id": userId, "x-appwrite-user-jwt": "jwt" }, bodyJson: { action: "plan", repository, issueNumber: 7 } }, res: { json: (body, status = 200) => (output = { body, status }) } });
+    return output;
+  };
+  assert.equal((await invoke("user-a", "owner/a")).status, 503);
+  assert.deepEqual(await invoke("user-a", "owner/b"), { body: { error: "Repository forbidden" }, status: 403 });
+  assert.deepEqual(await invoke("user-b", "owner/shared"), { body: { error: "Repository forbidden" }, status: 403 });
+});
+
+test("malformed per-user repository policy fails closed", async (t) => {
+  const previous = Object.fromEntries(["DASHBOARD_ALLOWED_USER_IDS", "DASHBOARD_USER_REPOSITORIES", "GITHUB_PATCH_ALLOWED_REPOSITORIES"].map((key) => [key, process.env[key]]));
+  Object.assign(process.env, { DASHBOARD_ALLOWED_USER_IDS: "user-a", DASHBOARD_USER_REPOSITORIES: "user-a:not-a-repository", GITHUB_PATCH_ALLOWED_REPOSITORIES: "owner/a" });
+  t.after(() => { for (const [key, value] of Object.entries(previous)) value === undefined ? delete process.env[key] : process.env[key] = value; });
+  const handler = createDashboardHandler({ makeStore: () => ({ listPlans: async () => { throw new Error("store must not run"); } }), makeClient: () => { throw new Error("network must not run"); } });
+  let output;
+  await handler({ req: { headers: { "x-appwrite-user-id": "user-a", "x-appwrite-user-jwt": "jwt" }, bodyJson: { action: "plan", repository: "owner/a", issueNumber: 7 } }, res: { json: (body, status = 200) => (output = { body, status }) } });
+  assert.deepEqual(output, { body: { error: "Patch repository access is not configured" }, status: 403 });
 });
 
 test("overview and issues omit out-of-scope plan and patch records while retaining legacy history", async (t) => {

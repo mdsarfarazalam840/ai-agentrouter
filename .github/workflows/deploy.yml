@@ -16,6 +16,8 @@ on:
           - all
           - github-profile-insights
           - github-pr-reviewer
+          - health-check
+          - github-dashboard
 
 permissions:
   contents: read
@@ -33,17 +35,20 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 20.x
           cache: npm
 
       - name: Install dependencies
         run: npm ci
 
-      - name: Build
-        run: npm run build --if-present
+      - name: Syntax check
+        run: npm run check
+
+      - name: Validate configuration
+        run: npm run validate:config
 
       - name: Test
-        run: npm test --if-present
+        run: npm test
 
       - name: Resolve service
         id: set-service
@@ -66,19 +71,27 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup Appwrite CLI
-        run: npm install -g appwrite-cli
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+          cache: npm
 
-      - name: Configure Appwrite CLI
+      - name: Verify Appwrite CLI
+        run: npx --yes appwrite-cli@6.1.0 --version
+
+      - name: Configure Appwrite CLI & Deploy github-profile-insights
         run: |
-            appwrite client \
-            --endpoint "${{ secrets.APPWRITE_ENDPOINT }}" \
-            --project-id "${{ secrets.APPWRITE_PROJECT_ID }}" \
-            --key "${{ secrets.APPWRITE_API_KEY }}"
+          APPWRITE_CLI=(npx --yes appwrite-cli@6.1.0)
+          "${APPWRITE_CLI[@]}" client \
+           --endpoint "${{ secrets.APPWRITE_BACKEND_A_ENDPOINT }}" \
+            --project-id "${{ secrets.APPWRITE_BACKEND_A_PROJECT_ID }}" \
+            --key "${{ secrets.APPWRITE_BACKEND_A_API_KEY }}"
 
-            appwrite functions create-deployment \
-            --function-id="${{ secrets.APPWRITE_PROFILE_FUNCTION_ID }}" \
+          "${APPWRITE_CLI[@]}" functions create-deployment \
+            --function-id="${{ secrets.APPWRITE_FUNCTION_GITHUB_PROFILE_INSIGHTS_ID }}" \
             --entrypoint="functions/github-profile-insights/src/main.js" \
             --code="." \
+            --commands="npm ci" \
             --activate=true
 
   deploy-pr-reviewer:
@@ -93,17 +106,88 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup Appwrite CLI
-        run: npm install -g appwrite-cli
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+          cache: npm
+
+      - name: Verify Appwrite CLI
+        run: npx --yes appwrite-cli@6.1.0 --version
 
       - name: Configure Appwrite CLI & Deploy github-pr-reviewer
         run: |
-            appwrite client \
-            --endpoint "${{ secrets.APPWRITE_ENDPOINT }}" \
-            --project-id "${{ secrets.APPWRITE_PROJECT_ID }}" \
-            --key "${{ secrets.APPWRITE_API_KEY }}"
+          APPWRITE_CLI=(npx --yes appwrite-cli@6.1.0)
+          "${APPWRITE_CLI[@]}" client \
+             --endpoint "${{ secrets.APPWRITE_BACKEND_A_ENDPOINT }}" \
+             --project-id "${{ secrets.APPWRITE_BACKEND_A_PROJECT_ID }}" \
+             --key "${{ secrets.APPWRITE_BACKEND_A_API_KEY }}"
 
-            appwrite functions create-deployment \
-            --function-id="${{ secrets.APPWRITE_PR_FUNCTION_ID }}" \
+          "${APPWRITE_CLI[@]}" functions create-deployment \
+            --function-id="${{ secrets.APPWRITE_FUNCTION_GITHUB_PR_REVIEWER_ID }}" \
             --entrypoint="functions/github-pr-review/src/main.js" \
             --code="." \
+            --commands="npm ci" \
             --activate=true
+
+  deploy-health-check:
+    needs: build-test
+    if: needs.build-test.outputs.deploy_service == 'all' || needs.build-test.outputs.deploy_service == 'health-check'
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Appwrite CLI
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+          cache: npm
+      - name: Verify Appwrite CLI
+        run: npx --yes appwrite-cli@6.1.0 --version
+      - name: Configure Appwrite CLI & Deploy health-check
+        run: |
+           APPWRITE_CLI=(npx --yes appwrite-cli@6.1.0)
+           "${APPWRITE_CLI[@]}" client --endpoint "${{ secrets.APPWRITE_BACKEND_B_ENDPOINT }}" --project-id "${{ secrets.APPWRITE_BACKEND_B_PROJECT_ID }}" --key "${{ secrets.APPWRITE_BACKEND_B_API_KEY }}"
+           "${APPWRITE_CLI[@]}" functions create-deployment --function-id="${{ secrets.APPWRITE_FUNCTION_HEALTH_CHECK_ID }}" --entrypoint="functions/health-check/src/main.js" --code="." --commands="npm ci" --activate=true
+
+  deploy-github-dashboard:
+    needs: build-test
+    if: needs.build-test.outputs.deploy_service == 'all' || needs.build-test.outputs.deploy_service == 'github-dashboard'
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+          cache: npm
+      - name: Deploy github-dashboard
+        run: |
+          APPWRITE_CLI=(npx --yes appwrite-cli@6.1.0)
+           "${APPWRITE_CLI[@]}" client --endpoint "${{ secrets.APPWRITE_BACKEND_B_ENDPOINT }}" --project-id "${{ secrets.APPWRITE_BACKEND_B_PROJECT_ID }}" --key "${{ secrets.APPWRITE_BACKEND_B_API_KEY }}"
+           "${APPWRITE_CLI[@]}" functions update --function-id="${{ secrets.APPWRITE_FUNCTION_GITHUB_DASHBOARD_ID }}" --entrypoint="functions/github-dashboard/src/main.js" --commands="npm ci" --timeout=30 --execute="users" --enabled=true --logging=true
+           "${APPWRITE_CLI[@]}" functions create-deployment --function-id="${{ secrets.APPWRITE_FUNCTION_GITHUB_DASHBOARD_ID }}" --entrypoint="functions/github-dashboard/src/main.js" --code="." --commands="npm ci" --activate=true
+
+  deploy-site:
+    needs: build-test
+    if: needs.build-test.outputs.deploy_service == 'all'
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+          cache: npm
+      - name: Stage dashboard Site
+        run: |
+          mkdir -p site-dist
+          cp dashboard/index.html dashboard/app.js dashboard/styles.css site-dist/
+          printf 'window.__APPWRITE_CONFIG__ = %s;\n' "$(jq -cn --arg endpoint '${{ secrets.APPWRITE_BACKEND_B_ENDPOINT }}' --arg projectId '${{ secrets.APPWRITE_BACKEND_B_PROJECT_ID }}' --arg dashboardFunctionId '${{ secrets.APPWRITE_FUNCTION_GITHUB_DASHBOARD_ID }}' '{endpoint:$endpoint,projectId:$projectId,dashboardFunctionId:$dashboardFunctionId}')" > site-dist/config.js
+      - name: Deploy Site
+        run: |
+          APPWRITE_CLI=(npx --yes appwrite-cli@6.1.0)
+          "${APPWRITE_CLI[@]}" client --endpoint "${{ secrets.APPWRITE_SITE_ENDPOINT }}" --project-id "${{ secrets.APPWRITE_SITE_PROJECT_ID }}" --key "${{ secrets.APPWRITE_SITE_API_KEY }}"
+          "${APPWRITE_CLI[@]}" sites create-deployment --site-id "${{ secrets.APPWRITE_SITE_ID }}" --code site-dist --activate true

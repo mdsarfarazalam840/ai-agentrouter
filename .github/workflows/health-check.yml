@@ -21,19 +21,21 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Appwrite CLI
-        run: npm install -g appwrite-cli
-
-      - name: Configure Appwrite & Execute
+      - name: Execute Backend B health Function
         env:
-          APPWRITE_ENDPOINT: ${{ vars.APPWRITE_ENDPOINT || 'https://cloud.appwrite.io/v1' }}
-          APPWRITE_PROJECT_ID: ${{ vars.APPWRITE_PROJECT_ID || '69f2e19a00218fea645f' }}
-          APPWRITE_API_KEY: ${{ secrets.APPWRITE_API_KEY }}
-          FUNCTION_ID: ${{ vars.APPWRITE_HEALTH_FUNCTION_ID || '69f2e2230023ab412430' }}
+          APPWRITE_BACKEND_B_ENDPOINT: ${{ vars.APPWRITE_BACKEND_B_ENDPOINT || 'https://cloud.appwrite.io/v1' }}
+          APPWRITE_BACKEND_B_PROJECT_ID: ${{ vars.APPWRITE_BACKEND_B_PROJECT_ID }}
+          APPWRITE_BACKEND_B_API_KEY: ${{ secrets.APPWRITE_BACKEND_B_API_KEY }}
+          FUNCTION_ID: ${{ vars.APPWRITE_FUNCTION_HEALTH_CHECK_ID }}
         run: |
-          if [ -z "$APPWRITE_API_KEY" ]; then
-            echo "::error::APPWRITE_API_KEY is missing."
+          if [ -z "$APPWRITE_BACKEND_B_API_KEY" ] || [ -z "$APPWRITE_BACKEND_B_PROJECT_ID" ] || [ -z "$FUNCTION_ID" ]; then
+            echo "::error::Backend B endpoint, project ID, API key, and health Function ID are required."
             exit 1
           fi
-
-          python functions/health-check/health_check.py
+          response=$(curl --fail-with-body --silent --show-error \
+            -X POST "$APPWRITE_BACKEND_B_ENDPOINT/functions/$FUNCTION_ID/executions" \
+            -H "X-Appwrite-Project: $APPWRITE_BACKEND_B_PROJECT_ID" \
+            -H "X-Appwrite-Key: $APPWRITE_BACKEND_B_API_KEY" \
+            -H "Content-Type: application/json" \
+            --data '{"body":"{}","async":false}')
+          echo "$response" | jq -e '.responseStatusCode == 200 or .responseStatusCode == 201' >/dev/null

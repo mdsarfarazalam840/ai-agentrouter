@@ -1,4 +1,4 @@
-import { getProviderHealth } from "../../../shared/lib/llm.js";
+import { getProviderHealth, probeProviderHealth } from "../../../shared/lib/llm.js";
 import { createDashboardStore, dashboardMetadata } from "../../../shared/lib/dashboard-store.js";
 import { createGitHubClient } from "../../../shared/lib/github.js";
 import { createIssuePlan } from "../../../shared/lib/planner.js";
@@ -115,16 +115,38 @@ function allowedRepository(name) {
   if (!configured.includes(name)) return "Repository forbidden";
   return null;
 }
-function visibleIssueRecord(record) {
+function userRepositoryPolicy() {
+  const raw = String(process.env.DASHBOARD_USER_REPOSITORIES || "").trim();
+  if (!raw) return { configured: false, users: new Map() };
+  const users = new Map();
+  for (const entry of raw.split(";").map((value) => value.trim()).filter(Boolean)) {
+    const separator = entry.indexOf(":");
+    if (separator <= 0) return null;
+    const userId = entry.slice(0, separator).trim();
+    const repositories = entry.slice(separator + 1).split("|").map((value) => value.trim()).filter(Boolean);
+    if (!userId || !repositories.length || repositories.some((repository) => !GITHUB_FULL_NAME.test(repository))) return null;
+    users.set(userId, new Set(repositories));
+  }
+  return { configured: true, users };
+}
+function allowedRepositoryForUser(name, userId) {
+  const globalError = allowedRepository(name);
+  if (globalError) return globalError;
+  const policy = userRepositoryPolicy();
+  if (!policy) return "Patch repository access is not configured";
+  if (policy.configured && !policy.users.get(userId)?.has(name)) return "Repository forbidden";
+  return null;
+}
+function visibleIssueRecord(record, userId) {
   const item = record?.data || record;
-  return !["plan", "patch"].includes(item?.command) || !allowedRepository(item?.fullName || item?.repository);
+  return !["plan", "patch"].includes(item?.command) || !allowedRepositoryForUser(item?.fullName || item?.repository, userId);
 }
 function safePatch(record) {
   const item = record?.data || record;
   return { patch: item.patch, patchId: item.$id, ...(item.validation ? { validation: item.validation } : {}), createdAt: item.createdAt };
 }
 
-export function createDashboardHandler({ makeStore = createDashboardStore, makeClient = createGitHubClient, makeService = createPatchService } = {}) { return async ({ req, res, log = () => {} }) => {
+export function createDashboardHandler({ makeStore = createDashboardStore, makeClient = createGitHubClient, makeService = createPatchService, makePlan = createIssuePlan } = {}) { return async ({ req, res, log = () => {} }) => {
   const userId = identity(req);
   if (!userId) return res.json({ error: "Unauthorized" }, 401);
   const allowed = String(process.env.DASHBOARD_ALLOWED_USER_IDS || "").split(",").map((value) => value.trim()).filter(Boolean);
@@ -136,11 +158,11 @@ export function createDashboardHandler({ makeStore = createDashboardStore, makeC
   if (invalid) return res.json({ error: invalid }, 400);
   const { action = "overview", repository, fullName, prNumber, issueNumber, limit, refresh } = params;
   try {
-    if (action === "health") return res.json({ ...dashboardMetadata(), providers: normalizeProviders(getProviderHealth()) });
+    if (action === "health") return res.json({ ...dashboardMetadata(), providers: normalizeProviders(await probeProviderHealth()) });
     if (["patch", "patch-history", "patch-validate", "patch-reject"].includes(action)) {
       const name = fullName || repository;
       if (!name || !GITHUB_FULL_NAME.test(name) || !issueNumber) return res.json({ error: "Patch requires repository owner/name and issueNumber" }, 400);
-      const denied = allowedRepository(name);
+       const denied = allowedRepositoryForUser(name, userId);
       if (denied) return res.json({ error: denied }, 403);
       if (action === "patch-history") {
         try {
@@ -162,7 +184,7 @@ export function createDashboardHandler({ makeStore = createDashboardStore, makeC
     if (action === "plan") {
       const name = fullName || repository;
       if (!name || !GITHUB_FULL_NAME.test(name) || !issueNumber) return res.json({ error: "Plan requires repository owner/name and issueNumber" }, 400);
-      const denied = allowedRepository(name);
+       const denied = allowedRepositoryForUser(name, userId);
       if (denied) return res.json({ error: denied }, 403);
       const [owner, repo] = name.split("/");
       if (!process.env.GITHUB_APP_INSTALLATION_ID) return res.json({ error: "Planning is not configured" }, 503);
@@ -174,19 +196,19 @@ export function createDashboardHandler({ makeStore = createDashboardStore, makeC
        if (latest?.plan && latest.fullName === name && Number(latest.issueNumber) === Number(issueNumber)) {
          try { const existing = typeof latest.plan === "string" ? JSON.parse(latest.plan) : latest.plan; if (existing.repository === name && Number(existing.issueNumber) === Number(issueNumber) && existing.issueRevision === currentRevision) return res.json({ plan: existing, planId: latest.$id, cached: true }); } catch { /* regenerate malformed cache */ }
       }
-      const plan = await createIssuePlan({ octokit, owner, repo, issueNumber: Number(issueNumber), logger: log });
+       const plan = await makePlan({ octokit, owner, repo, issueNumber: Number(issueNumber), logger: log });
       const issue = (await octokit.issues.get({ owner, repo, issue_number: Number(issueNumber) })).data;
       const nextRevision = await patchIssueRevision({ octokit, owner, repo, issueNumber: Number(issueNumber), issue });
       if (nextRevision !== currentRevision) return res.json({ error: "Issue changed during planning" }, 409);
       plan.issueRevision = nextRevision;
-      await store.persistPlan({ ...plan, repository: name, fullName: name, plan, status: "completed", createdAt: plan.createdAt });
-       return res.json({ plan, cached: false });
+       const saved = await store.persistPlan({ ...plan, repository: name, fullName: name, plan, status: "completed", createdAt: plan.createdAt });
+        return res.json({ plan, planId: saved?.$id, cached: false });
     }
-    if (action === "reviews") return res.json({ reviews: (await store.listReviews({ repository: repository || fullName, limit: page })).map(safe), findings: flattenFindings(await store.listFindings({ repository: repository || fullName, limit: page })) });
-    if (action === "review") return res.json({ reviews: (await store.listReviews({ repository: repository || fullName, prNumber, limit: page })).map(safe), findings: flattenFindings(await store.listFindings({ repository: repository || fullName, prNumber, limit: page })) });
-     if (action === "issues") return res.json({ issues: (await store.listIssues({ repository: repository || fullName, issueNumber, limit: page })).filter(visibleIssueRecord).map(safe) });
-    const [reviews, findings, issues, deliveries] = await Promise.all([store.listReviews(), store.listFindings(), store.listIssues(), store.listDeliveries()]);
-     return res.json({ ...dashboardMetadata(), providers: normalizeProviders(getProviderHealth()), reviews: reviews.map(safe), findings: flattenFindings(findings), issues: issues.filter(visibleIssueRecord).map(safe), deliveryStats: { total: deliveries.length, completed: deliveries.filter((item) => (item.data || item).state === "completed").length, failed: deliveries.filter((item) => (item.data || item).state === "released").length } });
+     if (action === "reviews") return res.json({ reviews: (await store.listReviews({ repository: repository || fullName, limit: page })).map(safe), findings: flattenFindings(await store.listFindings({ repository: repository || fullName, limit: page })) });
+     if (action === "review") return res.json({ reviews: (await store.listReviews({ repository: repository || fullName, prNumber, limit: page })).map(safe), findings: flattenFindings(await store.listFindings({ repository: repository || fullName, prNumber, limit: page })) });
+      if (action === "issues") return res.json({ issues: (await store.listIssues({ repository: repository || fullName, issueNumber, limit: page })).filter((record) => visibleIssueRecord(record, userId)).map(safe) });
+     const [reviews, findings, issues, deliveries] = await Promise.all([store.listReviews(), store.listFindings(), store.listIssues(), store.listDeliveries()]);
+      return res.json({ ...dashboardMetadata(), providers: normalizeProviders(getProviderHealth()), reviews: reviews.map(safe), findings: flattenFindings(findings), issues: issues.filter((record) => visibleIssueRecord(record, userId)).map(safe), deliveryStats: { total: deliveries.length, completed: deliveries.filter((item) => (item.data || item).state === "completed").length, failed: deliveries.filter((item) => (item.data || item).state === "released").length } });
   } catch { return res.json({ error: "Dashboard unavailable" }, 503); }
 }; }
 export default createDashboardHandler();

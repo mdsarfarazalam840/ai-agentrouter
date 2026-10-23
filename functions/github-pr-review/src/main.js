@@ -7,6 +7,7 @@ import {
   createSummaryComment,
   fetchPrDiff,
   getHeader,
+  listIssueComments,
   verifyWebhookSignature,
 } from "../../../shared/lib/github.js";
 import { buildPrReviewPrompt, buildIssuePrompt, buildPrCommandPrompt, } from "../../../shared/lib/prompts.js";
@@ -186,8 +187,8 @@ async function handleIssueComment({ body, res, log, error, deliveryId, makeClien
       const files = patch.files.slice(0, 10).map((file) => `- \`${file.path}\` (${file.operation})`).join("\n");
       const risks = patch.risks.slice(0, 5).map((risk) => `- ${risk}`).join("\n");
       const commentBody = `${marker}\n## PRISM patch proposal\n\n${patch.summary.slice(0, 1000)}\n\n### Files\n${files || "None"}\n\n### Risks\n${risks || "None"}\n\nReview and approve this proposal in the [PRISM dashboard](${dashboardUrl}). No repository files were changed.`;
-      const comments = await octokit.issues.listComments({ owner, repo: repository, issue_number: issue.number, per_page: 100 });
-      const previous = (comments.data || []).find((item) => item.user?.type === "Bot" && typeof item.body === "string" && item.body.includes(marker));
+       const comments = await listIssueComments({ octokit, owner, repo: repository, issueNumber: issue.number });
+       const previous = comments.find((item) => item.user?.type === "Bot" && typeof item.body === "string" && item.body.includes(marker));
       if (previous) {
         if (previous.body !== commentBody) await octokit.issues.updateComment({ owner, repo: repository, comment_id: previous.id, body: commentBody });
       } else await octokit.issues.createComment({ owner, repo: repository, issue_number: issue.number, body: commentBody });
@@ -223,12 +224,18 @@ async function handleIssueComment({ body, res, log, error, deliveryId, makeClien
     const rendered = renderPlan(plan);
     const commentBody = rendered.startsWith(marker) ? rendered : `${marker}\n${rendered}`;
     await makeStore(process.env, error).persistPlan({ ...plan, repository: repo.name, fullName, status: "completed", deliveryId, createdAt: plan.createdAt, plan });
-    const comments = await octokit.issues.listComments({ owner: repo.owner.login, repo: repo.name, issue_number: issue.number, per_page: 100 });
-    const previous = (comments.data || []).find((item) => item.user?.type === "Bot" && typeof item.body === "string" && item.body.includes(marker));
+     const comments = await listIssueComments({ octokit, owner: repo.owner.login, repo: repo.name, issueNumber: issue.number });
+     const previous = comments.find((item) => item.user?.type === "Bot" && typeof item.body === "string" && item.body.includes(marker));
     if (previous) {
-      if (previous.body !== commentBody) await octokit.issues.updateComment({ owner: repo.owner.login, repo: repo.name, comment_id: previous.id, body: commentBody });
+      if (previous.body !== commentBody) {
+        await octokit.issues.updateComment({ owner: repo.owner.login, repo: repo.name, comment_id: previous.id, body: commentBody });
+        log("PLAN_COMMENT_UPDATED");
+      } else {
+        log("PLAN_COMMENT_UNCHANGED");
+      }
     } else {
       await octokit.issues.createComment({ owner: repo.owner.login, repo: repo.name, issue_number: issue.number, body: commentBody });
+      log("PLAN_COMMENT_CREATED");
     }
     log("PLAN_PERSISTENCE_SUCCEEDED");
     return res.text("OK");

@@ -1,6 +1,6 @@
 {
     "projectId": "69f2da78000231a299a3",
-    "projectName": "Health check",
+    "projectName": "AI Agent Router Backend A",
     "endpoint": "https://fra.cloud.appwrite.io/v1",
     "settings": {
         "services": {
@@ -41,30 +41,11 @@
     },
     "functions": [
         {
-            "$id": "69f2e2230023ab412430",
-            "name": "health-check",
-            "runtime": "node-25",
-            "path": "functions/health-check",
-            "entrypoint": "src/main.js",
-            "execute": [
-                "any"
-            ],
-            "enabled": true,
-            "logging": true,
-            "events": [],
-            "schedule": "",
-            "timeout": 15,
-            "commands": "npm install",
-            "scopes": [
-                "users.read"
-            ]
-        },
-        {
             "$id": "69f76805000e6d129f17",
             "name": "github-pr-reviewer",
-            "runtime": "node-25",
-            "path": "functions/github-pr-reviewer",
-            "entrypoint": "src/functions/github-pr-reviewer/main.js",
+            "runtime": "node-20",
+            "path": ".",
+            "entrypoint": "functions/github-pr-review/src/main.js",
             "execute": [
                 "any"
             ],
@@ -72,12 +53,29 @@
             "logging": true,
             "events": [],
             "schedule": "",
-            "timeout": 15,
-            "commands": "npm install",
+            "timeout": 60,
+            "commands": "npm ci",
             "scopes": [],
             "buildSpecification": "s-0.5vcpu-512mb",
             "runtimeSpecification": "s-0.5vcpu-512mb",
             "deploymentRetention": 0
+        },
+        {
+            "$id": "APPWRITE_FUNCTION_GITHUB_PROFILE_INSIGHTS_ID",
+            "name": "github-profile-insights",
+            "runtime": "node-20",
+            "path": ".",
+            "entrypoint": "functions/github-profile-insights/src/main.js",
+            "execute": [
+                "users"
+            ],
+            "enabled": true,
+            "logging": true,
+            "events": [],
+            "schedule": "",
+            "timeout": 60,
+            "commands": "npm ci",
+            "scopes": []
         }
     ]
 }

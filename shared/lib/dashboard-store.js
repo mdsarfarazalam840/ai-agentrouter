@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { boundedFetchText } from "./bounded.js";
 import { normalizeIssuePlan } from "./planner.js";
 
@@ -23,6 +23,13 @@ function issueNumberOf(input) {
   const number = Number(input.issueNumber);
   if (!Number.isSafeInteger(number) || number <= 0) throw new Error("INVALID_ISSUE_NUMBER");
   return number;
+}
+
+export function deterministicPlanDocumentId(input = {}, plan = {}) {
+  const revision = typeof plan.issueRevision === "string" ? plan.issueRevision.trim() : "";
+  if (!revision) return null;
+  const identity = JSON.stringify({ kind: "plan", fullName: canonicalRepository(input), issueNumber: issueNumberOf(input), issueRevision: revision });
+  return `plan-${createHash("sha256").update(identity).digest("hex").slice(0, 24)}`;
 }
 
 function envelopeData(input, kind, envelope) {
@@ -88,9 +95,14 @@ function urlFor(c, collection, suffix = "") {
   return `${c.endpoint}/databases/${encodeURIComponent(c.database)}/collections/${encodeURIComponent(collection)}/documents${suffix}`;
 }
 
-async function request(c, url, options = {}) {
-  const response = await boundedFetchText(url, { ...options, timeoutMs: 2500, headers: { "X-Appwrite-Project": c.project, "X-Appwrite-Key": c.key, "Content-Type": "application/json", ...(options.headers || {}) } });
-  return response ? JSON.parse(response) : {};
+async function request(c, url, options = {}, acceptedStatuses = []) {
+  try {
+    const response = await boundedFetchText(url, { ...options, timeoutMs: 2500, headers: { "X-Appwrite-Project": c.project, "X-Appwrite-Key": c.key, "Content-Type": "application/json", ...(options.headers || {}) } });
+    return response ? JSON.parse(response) : {};
+  } catch (error) {
+    if (acceptedStatuses.includes(error.status)) return { __status: error.status };
+    throw error;
+  }
 }
 
 export function dashboardMetadata() {
@@ -125,8 +137,14 @@ export function createDashboardStore(env = process.env, logger = () => {}) {
     if (!c || !collections.issues) throw new Error(`${kind.toUpperCase()}_PERSISTENCE_UNAVAILABLE`);
     try {
       const data = envelopeData(input, kind, envelope);
-      const documentId = randomUUID();
-      const document = await request(c, urlFor(c, collections.issues), { method: "POST", body: JSON.stringify({ documentId, data }) });
+      const documentId = kind === "plan" ? deterministicPlanDocumentId(input, envelope.plan) || randomUUID() : randomUUID();
+      let document = await request(c, urlFor(c, collections.issues), { method: "POST", body: JSON.stringify({ documentId, data }) }, kind === "plan" ? [409] : []);
+      if (document.__status === 409) {
+        const existing = await request(c, urlFor(c, collections.issues, `/${encodeURIComponent(documentId)}`));
+        const parsed = parsedDocument(existing, kind);
+        if (existing.$id !== documentId || parsed.command !== kind || parsed.fullName !== data.fullName || Number(parsed.issueNumber) !== Number(data.issueNumber) || parsed.plan?.issueRevision !== envelope.plan?.issueRevision) throw new Error("PLAN_IDENTITY_MISMATCH");
+        document = await request(c, urlFor(c, collections.issues, `/${encodeURIComponent(documentId)}`), { method: "PATCH", body: JSON.stringify({ data }) });
+      }
       if (document.$id !== documentId || document.command !== kind || document.response !== data.response) throw new Error("INCOMPLETE_WRITE_ACKNOWLEDGEMENT");
       return parsedDocument(document, kind);
     } catch (error) {
@@ -148,7 +166,26 @@ export function createDashboardStore(env = process.env, logger = () => {}) {
     persistPatch: (input) => persistEnvelope("patch", input, { kind: "patch", patch: input.patch, ...(input.snapshot === undefined ? {} : { snapshot: input.snapshot }), ...(input.validation === undefined ? {} : { validation: safeValidation(input.validation) }) }),
     listReviews: (query) => list("reviews", collections.reviews, query),
     listIssues: (query) => list("issues", collections.issues, query),
-    listPlans: async (query = {}) => (await list("plans", collections.issues, { ...query, command: "plan" }, true)).map((document) => parsedDocument(document, "plan")),
+    listPlans: async (query = {}) => {
+      const { limit: requestedLimit, offset: requestedOffset, ...filters } = query;
+      const pageSize = Number.isInteger(requestedLimit) && requestedLimit > 0 && requestedLimit <= 100 ? requestedLimit : 100;
+      const startOffset = Number.isSafeInteger(requestedOffset) && requestedOffset > 0 ? requestedOffset : 0;
+      const records = [];
+      for (let page = 0; page < 10 && records.length < 1000; page++) {
+        const documents = await list("plans", collections.issues, { ...filters, command: "plan", limit: pageSize, offset: startOffset + page * pageSize }, true);
+        records.push(...documents.map((document) => parsedDocument(document, "plan")));
+        if (documents.length < pageSize || requestedLimit !== undefined) break;
+      }
+      const boundedRecords = requestedLimit === undefined ? records : records.slice(0, pageSize);
+      const selected = new Map();
+      for (const record of boundedRecords) {
+        const revision = record.plan?.issueRevision;
+        const key = revision ? `${record.fullName || record.repository}\u0000${record.issueNumber}\u0000${revision}` : `record:${record.$id}`;
+        const current = selected.get(key);
+        if (!current || (deterministicPlanDocumentId(record, record.plan) === record.$id && deterministicPlanDocumentId(current, current.plan) !== current.$id)) selected.set(key, record);
+      }
+      return [...selected.values()];
+    },
     listPatches: async (query) => {
       const { patchRevision, limit, ...filters } = query;
       const identity = patchIdentity(filters);

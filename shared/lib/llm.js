@@ -4,7 +4,9 @@ const NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1";
 const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
 const DEFAULT_TOTAL_TIMEOUT_MS = 45000;
 const DEFAULT_ATTEMPT_TIMEOUT_MS = 12000;
+const DEFAULT_HEALTH_PROBE_TIMEOUT_MS = 3000;
 const DEFAULT_CACHE_SECONDS = 900;
+const PROVIDERS = ["nvidia", "openrouter"];
 const EMERGENCY_MODELS = {
   nvidia: {
     weekly: ["meta/llama-3.2-3b-instruct", "google/gemma-2-2b-it", "nvidia/nemotron-mini-4b-instruct", "microsoft/phi-4-mini-instruct"],
@@ -25,7 +27,23 @@ function now() { return new Date().toISOString(); }
 function cacheSeconds() { const value = Number(process.env.AI_MODEL_CACHE_SECONDS); return Number.isFinite(value) && value >= 0 ? value : DEFAULT_CACHE_SECONDS; }
 function modelMode() { return String(process.env.AI_MODEL_MODE || "dynamic").toLowerCase() === "fixed" ? "fixed" : "dynamic"; }
 function timeoutMs(options = {}) { return Math.max(1, Math.min(Number(options.providerTimeoutMs) || Number(process.env.AI_PROVIDER_TIMEOUT_MS) || DEFAULT_ATTEMPT_TIMEOUT_MS, 20000)); }
+function healthProbeTimeoutMs(options = {}) { return Math.max(1, Math.min(Number(options.timeoutMs) || Number(process.env.AI_HEALTH_PROBE_TIMEOUT_MS) || DEFAULT_HEALTH_PROBE_TIMEOUT_MS, 5000)); }
 function configured(provider) { return provider === "nvidia" ? Boolean(process.env.NVIDIA_API_KEY) : Boolean(process.env.OPENROUTER_API_KEY); }
+function emergencyModels(provider, task) { return EMERGENCY_MODELS[provider]?.[task] || (provider === "nvidia" && task === "issue_plan" ? [] : EMERGENCY_MODELS[provider]?.fallback || []); }
+
+function syncProviderConfiguration() {
+  for (const provider of PROVIDERS) {
+    const isConfigured = configured(provider);
+    if (!isConfigured) {
+      health[provider].catalogStatus = "unavailable";
+      health[provider].discoveredCount = 0;
+      health[provider].selectedModel = null;
+      health[provider].lastFailureCategory = null;
+      health[provider].updatedAt = null;
+    }
+    health[provider].configured = isConfigured;
+  }
+}
 function isFreeOpenRouterModel(model, discovered = []) {
   const entry = typeof model === "string" ? null : model;
   const normalized = String(entry?.id || model || "").toLowerCase();
@@ -85,7 +103,12 @@ export function selectModels(provider, task, discovered = []) {
 async function discoverCatalog(provider, task, signal) {
   const key = `${provider}:${task}:paid=${process.env.AI_ALLOW_PAID_MODELS === "true"}`;
   const hit = catalogCache.get(key);
-  if (hit && (Date.now() - hit.updated) < cacheSeconds() * 1000) return hit.models;
+  if (hit && (Date.now() - hit.updated) < cacheSeconds() * 1000) {
+    health[provider].catalogStatus = "ok";
+    health[provider].discoveredCount = hit.models.length;
+    health[provider].updatedAt = now();
+    return hit.models;
+  }
   const apiKey = provider === "nvidia" ? process.env.NVIDIA_API_KEY : process.env.OPENROUTER_API_KEY;
   try {
     const response = await fetch(`${provider === "nvidia" ? NVIDIA_BASE_URL : OPENROUTER_BASE_URL}/models`, { headers: { Authorization: `Bearer ${apiKey}` }, signal });
@@ -108,7 +131,45 @@ async function discoverCatalog(provider, task, signal) {
 }
 
 export function resetProviderCatalogCache() { catalogCache.clear(); }
-export function getProviderHealth() { return JSON.parse(JSON.stringify(health)); }
+export function getProviderHealth() { syncProviderConfiguration(); return JSON.parse(JSON.stringify(health)); }
+
+// Health checks intentionally stop at provider catalog access. They do not send
+// prompts or consume a model generation, and only return safe metadata.
+export async function probeProviderHealth(options = {}) {
+  syncProviderConfiguration();
+  const task = typeof options.task === "string" && options.task ? options.task : "review";
+  await Promise.all(PROVIDERS.map(async (provider) => {
+    if (!health[provider].configured) return;
+    if (modelMode() === "fixed") {
+      const selected = selectModels(provider, task, [])[0] || null;
+      health[provider].catalogStatus = selected ? "configured" : "unavailable";
+      health[provider].selectedModel = selected;
+      health[provider].discoveredCount = 0;
+      health[provider].updatedAt = now();
+      return;
+    }
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), healthProbeTimeoutMs(options));
+    try {
+      const discovered = await discoverCatalog(provider, task, controller.signal);
+      const selected = selectModels(provider, task, discovered)[0] || emergencyModels(provider, task)[0] || null;
+      health[provider].selectedModel = selected;
+      health[provider].catalogStatus = health[provider].catalogStatus === "ok" && discovered.length && selected ? "ok" : selected ? "fallback" : "unavailable";
+      health[provider].discoveredCount = health[provider].catalogStatus === "ok" ? discovered.length : 0;
+      health[provider].updatedAt = now();
+    } catch {
+      const selected = emergencyModels(provider, task)[0] || null;
+      health[provider].catalogStatus = selected ? "fallback" : "unavailable";
+      health[provider].selectedModel = selected;
+      health[provider].discoveredCount = 0;
+      health[provider].updatedAt = now();
+    } finally {
+      clearTimeout(timer);
+    }
+  }));
+  return getProviderHealth();
+}
 
 function createClient(provider, options = {}) {
   const isOpenRouter = provider === "openrouter";
@@ -118,7 +179,7 @@ function buildCompletionOptions(messages, options = {}) {
   const result = { model: options.model, messages };
   for (const key of ["temperature", "top_p", "max_tokens"]) if (options[key] !== undefined) result[key] = options[key];
   if (options.responseFormat && !(options.provider === "openrouter" && (options.model === "openrouter/free" || options.model.endsWith(":free")))) result.response_format = options.responseFormat;
-  if (options.enableThinking !== false) result.extra_body = { chat_template_kwargs: { enable_thinking: true, clear_thinking: false } };
+  if (options.provider === "nvidia") result.chat_template_kwargs = { enable_thinking: options.enableThinking !== false, clear_thinking: false };
   return result;
 }
 function getAssistantContent(response) {
@@ -180,6 +241,7 @@ async function runProvider(messages, provider, options, deadline) {
 
 export async function callLLM(messages, options = {}) {
   if (!Array.isArray(messages) || !messages.length) throw new Error("LLM_UNAVAILABLE");
+  syncProviderConfiguration();
   const logger = typeof options.errorLogger === "function" ? options.errorLogger : () => {};
     const deadline = Date.now() + Math.max(1, Math.min(Number(options.totalTimeoutMs) || DEFAULT_TOTAL_TIMEOUT_MS, DEFAULT_TOTAL_TIMEOUT_MS));
   const controller = new AbortController();
