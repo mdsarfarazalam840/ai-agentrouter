@@ -24,15 +24,17 @@ test('both dashboard deployment bundles include every local JavaScript import', 
   }
 });
 
-test('function deployment stages repository root with shared patch modules syntax checked', async () => {
+test('function deployment stages runtime files with shared patch modules syntax checked', async () => {
   const deployment = await source('scripts/deploy-functions.ps1');
-  assert.match(deployment, /functions create-deployment[^\r\n]*--code "\."/, 'function archive must include shared/lib');
+  assert.match(deployment, /create-deployment[^\r\n]*--code \$stagingRoot/, 'function archive must use the bounded runtime staging directory');
+  assert.match(deployment, /Copy-Item[^\r\n]+shared\/lib\/\*/, 'function archive must include shared/lib');
   const dashboard = deployment.match(/"github-dashboard"\s*=\s*@\{[^\r\n]+/)?.[0];
   assert.ok(dashboard, 'dashboard function deployment definition missing');
   for (const variable of ['GITHUB_APP_INSTALLATION_ID']) {
     assert.ok(dashboard.includes(`"${variable}"`), `dashboard must sync server-only ${variable}`);
     assert.match(deployment, new RegExp(`Require-Values[^\\r\\n]*"${variable}"`), `dashboard must require ${variable}`);
   }
+  assert.ok(dashboard.includes('"DASHBOARD_USER_REPOSITORIES"'), 'dashboard must sync optional per-user repository policy');
   for (const variable of ['GITHUB_APP_ID', 'GITHUB_PRIVATE_KEY', 'APP_ID', 'PRIVATE_KEY']) assert.ok(dashboard.includes(`"${variable}"`), `dashboard must sync server-only ${variable}`);
   assert.match(deployment, /Require-OneOf @\("GITHUB_APP_ID", "APP_ID"\)/);
   assert.match(deployment, /Require-OneOf @\("GITHUB_PRIVATE_KEY", "PRIVATE_KEY"\)/);

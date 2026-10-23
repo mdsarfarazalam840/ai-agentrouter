@@ -50,7 +50,7 @@ export async function createIssuePlan({ octokit, owner, repo, issueNumber, deliv
   const context = await fetchIssuePlanningContext({ octokit, owner, repo, issueNumber });
   const revision = issueRevision(context.issue);
   let invocationMetadata = null;
-  const content = await callLLM([{ role: "user", content: buildIssuePlanPrompt(formatPlanningContext(context, 12000)) }], { temperature: 0.1, top_p: 0.8, max_tokens: 1400, totalTimeoutMs: 20000, enableThinking: false, providerTimeoutMs: 8000, responseFormat: { type: "json_object" }, errorLogger: logger, task: "issue_plan", onInvocation: (metadata) => { invocationMetadata = metadata; } });
+  const content = await callLLM([{ role: "user", content: buildIssuePlanPrompt(formatPlanningContext(context, 12000)) }], { temperature: 0.1, top_p: 0.8, max_tokens: 1400, totalTimeoutMs: 30000, enableThinking: false, providerTimeoutMs: 16000, responseFormat: { type: "json_object" }, errorLogger: logger, task: "issue_plan", onInvocation: (metadata) => { invocationMetadata = metadata; } });
   const metadata = { ...(invocationMetadata || selectedProviderMetadata()), issueRevision: revision, repository: context.repository.fullName, issueNumber: context.issue.number, issueTitle: context.issue.title, issueUrl: context.issue.htmlUrl, deliveryId };
   return normalizeIssuePlan(content, metadata);
 }

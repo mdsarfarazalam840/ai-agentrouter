@@ -18,7 +18,7 @@ export function providerPresentation(provider = {}) {
   return {
     usable,
     label: providerName(provider),
-    statusLabel: usable ? (status === 'degraded' ? 'DEGRADED' : 'READY') : provider.configured === false ? 'OFFLINE' : 'UNAVAILABLE',
+    statusLabel: usable ? (status === 'degraded' ? 'DEGRADED' : 'READY') : provider.configured === false ? 'OFFLINE' : status === 'configured' ? 'CONFIGURED' : 'UNAVAILABLE',
     failureLabel: `${fallback ? 'free-only fallback · ' : ''}Failure: ${category}`,
   };
 }

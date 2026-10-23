@@ -22,6 +22,22 @@ test("LLM fallback uses OpenRouter after an upstream failure", async (t) => {
   assert.ok(urls.some((url) => url.includes("openrouter")));
 });
 
+test("NVIDIA receives an explicit thinking-disabled request when planning disables thinking", async (t) => {
+  const old = { nvidia: process.env.NVIDIA_API_KEY, openrouter: process.env.OPENROUTER_API_KEY, mode: process.env.AI_MODEL_MODE, models: process.env.AI_NVIDIA_MODELS };
+  process.env.NVIDIA_API_KEY = "test";
+  process.env.OPENROUTER_API_KEY = "";
+  process.env.AI_MODEL_MODE = "fixed";
+  process.env.AI_NVIDIA_MODELS = "nvidia/nemotron-3-ultra-550b-a55b";
+  t.after(() => { for (const [key, value] of Object.entries({ NVIDIA_API_KEY: old.nvidia, OPENROUTER_API_KEY: old.openrouter, AI_MODEL_MODE: old.mode, AI_NVIDIA_MODELS: old.models })) value === undefined ? delete process.env[key] : process.env[key] = value; });
+  let requestBody;
+  t.mock.method(globalThis, "fetch", async (_input, options) => {
+    requestBody = JSON.parse(options.body);
+    return new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), { status: 200, headers: { "content-type": "application/json" } });
+  });
+  assert.equal(await callLLM([{ role: "user", content: "x" }], { provider: "nvidia", model: "nvidia/nemotron-3-ultra-550b-a55b", enableThinking: false, totalTimeoutMs: 1000, providerTimeoutMs: 100, errorLogger() {} }), "ok");
+  assert.deepEqual(requestBody.chat_template_kwargs, { enable_thinking: false, clear_thinking: false });
+});
+
 test("LLM deadline aborts a stalled provider", async (t) => {
   const old = process.env.NVIDIA_API_KEY; process.env.NVIDIA_API_KEY = "test";
   t.after(() => old === undefined ? delete process.env.NVIDIA_API_KEY : process.env.NVIDIA_API_KEY = old);
@@ -300,6 +316,18 @@ test("health metadata is safe and records provider failure without raw errors", 
   assert.equal(health.nvidia.lastFailureCategory, "upstream_http");
   assert.equal(JSON.stringify(health).includes("secret-key"), false);
   assert.equal(JSON.stringify(health).includes("nope"), false);
+});
+
+test("provider health reflects configured credentials before any model generation", async (t) => {
+  const old = { nvidia: process.env.NVIDIA_API_KEY, openrouter: process.env.OPENROUTER_API_KEY, mode: process.env.AI_MODEL_MODE };
+  process.env.NVIDIA_API_KEY = "nvidia-secret";
+  process.env.OPENROUTER_API_KEY = "openrouter-secret";
+  process.env.AI_MODEL_MODE = "fixed";
+  t.after(() => { for (const [key, value] of Object.entries({ NVIDIA_API_KEY: old.nvidia, OPENROUTER_API_KEY: old.openrouter, AI_MODEL_MODE: old.mode })) value === undefined ? delete process.env[key] : process.env[key] = value; });
+  const health = getProviderHealth();
+  assert.equal(health.nvidia.configured, true);
+  assert.equal(health.openrouter.configured, true);
+  assert.equal(JSON.stringify(health).includes("secret"), false);
 });
 
 test("provider health clears the last failure category after recovery", async (t) => {

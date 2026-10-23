@@ -143,7 +143,7 @@ test("/plan persists before posting and reuses the deterministic plan comment on
   const signature = `sha256=${crypto.createHmac("sha256", "test-secret").update(bodyRaw).digest("hex")}`;
   const result = await handler({ req: { headers: { "x-github-event": "issue_comment", "x-github-delivery": "delivery", "x-hub-signature-256": signature }, bodyRaw }, res: { text: (value, status = 200) => ({ body: value, status }) }, log: (message) => logs.push(message), error: (message) => logs.push(`error:${message}`) });
   assert.deepEqual(result, { body: "OK", status: 200 });
-  assert.deepEqual(logs.filter((message) => message.startsWith("PLAN_")), ["PLAN_GENERATION_STARTED", "PLAN_GENERATION_SUCCEEDED", "PLAN_PERSISTENCE_SUCCEEDED"]);
+   assert.deepEqual(logs.filter((message) => message.startsWith("PLAN_")), ["PLAN_GENERATION_STARTED", "PLAN_GENERATION_SUCCEEDED", "PLAN_COMMENT_CREATED", "PLAN_PERSISTENCE_SUCCEEDED"]);
   assert.equal(logs.some((message) => message.includes("private plan summary")), false);
   assert.equal(comments.length, 1);
   assert.match(comments[0].body, /^<!-- ai-agentrouter:issue-plan:[a-f0-9]{24} -->\nrendered plan 1$/);
@@ -155,8 +155,44 @@ test("/plan persists before posting and reuses the deterministic plan comment on
   assert.deepEqual(await handler({ req: { headers: { "x-github-event": "issue_comment", "x-github-delivery": "delivery-2", "x-hub-signature-256": secondSignature }, bodyRaw: secondBodyRaw }, res: { text: (value, status = 200) => ({ body: value, status }) }, log() {}, error() {} }), { body: "OK", status: 200 });
   assert.equal(persisted.length, 2);
   assert.equal(comments.length, 1);
-  assert.equal(updates.length, 1);
-  assert.equal(updates[0].comment_id, 1);
+   assert.equal(updates.length, 1);
+   assert.equal(updates[0].comment_id, 1);
+});
+
+test("/plan logs unchanged when the deterministic GitHub comment already matches", async (t) => {
+  setup(t);
+  const logs = [];
+  const states = [];
+  const comments = [];
+  const issue = { number: 37, title: "Example issue", body: "public issue body" };
+  const octokit = { issues: {
+    get: async () => ({ data: issue }),
+    listComments: async () => ({ data: comments.map((entry, index) => ({ id: index + 1, user: { type: "Bot" }, body: entry.body })) }),
+    createComment: async (args) => comments.push(args),
+    updateComment: async () => { throw new Error("UPDATE_SHOULD_NOT_RUN"); },
+  } };
+  const handler = createWebhookHandler({
+    makeClient: () => octokit,
+    makeStore: () => ({ persistPlan: async () => {} }),
+    makePlan: async () => ({ createdAt: "2026-10-21T00:00:00.000Z", issueRevision: "sha", summary: "private plan summary", implementationSteps: ["Implement the change"], testPlan: ["Run the focused tests"] }),
+    renderPlan: (plan) => `<!-- ai-agentrouter:issue-plan:${plan.issueRevision} -->\nrendered plan`,
+    makeDeliveryStore: () => ({ claim: async () => ({ id: "delivery", ownerToken: "token" }), complete: async () => states.push("completed"), release: async () => states.push("released") }),
+  });
+  const body = { ...metadata, action: "created", issue, comment: { body: "/plan", user: { type: "User", login: "alice" } } };
+  const invokePlan = async (delivery) => {
+    const bodyRaw = JSON.stringify(body);
+    const signature = `sha256=${crypto.createHmac("sha256", "test-secret").update(bodyRaw).digest("hex")}`;
+    return handler({ req: { headers: { "x-github-event": "issue_comment", "x-github-delivery": delivery, "x-hub-signature-256": signature }, bodyRaw }, res: { text: (value, status = 200) => ({ body: value, status }) }, log: (message) => logs.push(message), error() {} });
+  };
+
+  assert.deepEqual(await invokePlan("delivery-1"), { body: "OK", status: 200 });
+  assert.deepEqual(await invokePlan("delivery-2"), { body: "OK", status: 200 });
+  assert.equal(comments.length, 1);
+  assert.deepEqual(logs.filter((message) => message.startsWith("PLAN_")), [
+    "PLAN_GENERATION_STARTED", "PLAN_GENERATION_SUCCEEDED", "PLAN_COMMENT_CREATED", "PLAN_PERSISTENCE_SUCCEEDED",
+    "PLAN_GENERATION_STARTED", "PLAN_GENERATION_SUCCEEDED", "PLAN_COMMENT_UNCHANGED", "PLAN_PERSISTENCE_SUCCEEDED",
+  ]);
+  assert.deepEqual(states, ["completed", "completed"]);
 });
 
 test("/plan provider failure emits only the bounded generation failure marker and safe fallback", async (t) => {

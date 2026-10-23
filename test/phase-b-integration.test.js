@@ -56,6 +56,17 @@ test('direct plan cache checks canonical comment-aware revision and rejects stal
   assert.equal(reads, 2);
 }));
 
+test('generated dashboard plans return the persisted deterministic plan ID', async () => withEnvironment({ DASHBOARD_ALLOWED_USER_IDS: 'operator', GITHUB_PATCH_ALLOWED_REPOSITORIES: 'owner/repo', GITHUB_APP_INSTALLATION_ID: '1' }, async () => {
+  const issue = { id: 3, number: 9, title: 'Fix', body: 'original' };
+  const octokit = { issues: { get: async () => ({ data: issue }), listComments: async () => ({ data: [] }) } };
+  const store = { listPlans: async () => [], persistPlan: async () => ({ $id: 'plan-deterministic' }) };
+  const handler = createDashboardHandler({ makeStore: () => store, makeClient: () => octokit, makePlan: async () => ({ summary: 'generated', implementationSteps: ['change it'], testPlan: ['test it'] }) });
+  const result = await request(handler, { action: 'plan', repository: 'owner/repo', issueNumber: 9 });
+  assert.equal(result.status, 200);
+  assert.equal(result.value.planId, 'plan-deterministic');
+  assert.equal(result.value.cached, false);
+}));
+
 test('patch routes fail closed on missing or mismatched server-side repository allowlist before GitHub or store reads', async () => {
   let calls = 0;
   const handler = createDashboardHandler({ makeStore: () => ({ listPatches: async () => { calls++; return []; } }), makeClient: () => { calls++; return {}; } });

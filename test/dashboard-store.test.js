@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createDashboardStore } from "../shared/lib/dashboard-store.js";
+import { createDashboardStore, deterministicPlanDocumentId } from "../shared/lib/dashboard-store.js";
 
 const env = { APPWRITE_ENDPOINT: "https://appwrite.test/v1", APPWRITE_PROJECT_ID: "project", APPWRITE_API_KEY: "key", WEBHOOK_DATABASE_ID: "database", DASHBOARD_ISSUE_COLLECTION_ID: "issues" };
 const originalFetch = globalThis.fetch;
@@ -44,6 +44,91 @@ test("plan round trips through provisioned response field and reads legacy plan 
     const listed = await store.listPlans({ repository: "org/repo", issueNumber: 7 });
     assert.equal(listed[0].plan.issueRevision, "r1");
     assert.equal(listed[1].plan.summary, "old");
+  } finally { restore(); }
+});
+
+test("plans use a stable document ID and update the same revision after an Appwrite conflict", async () => {
+  const calls = [];
+  const plan = { summary: "new", implementationSteps: ["apply the planned change"], testPlan: ["run the focused test suite"], issueRevision: "r1" };
+  const expectedId = deterministicPlanDocumentId({ repository: "org/repo", issueNumber: 7 }, plan);
+  let document;
+  const restore = fixture(async (url, options = {}) => {
+    const method = options.method || "GET";
+    calls.push({ method, url: String(url) });
+    if (method === "POST") {
+      const { documentId, data } = JSON.parse(options.body);
+      if (document) return json({ message: "already exists" }, 409);
+      document = { $id: documentId, ...data };
+      return json(document, 201);
+    }
+    if (method === "GET") return json(document);
+    if (method === "PATCH") {
+      const { data } = JSON.parse(options.body);
+      document = { ...document, ...data };
+      return json(document);
+    }
+    throw new Error(`Unexpected method ${method}`);
+  });
+  try {
+    const store = createDashboardStore(env);
+    const first = await store.persistPlan({ repository: "org/repo", issueNumber: 7, plan });
+    const second = await store.persistPlan({ repository: "org/repo", issueNumber: 7, plan: { ...plan, summary: "updated" } });
+    assert.equal(first.$id, expectedId);
+    assert.equal(second.$id, expectedId);
+    assert.equal(second.plan.summary, "updated");
+    assert.deepEqual(calls.map(({ method }) => method), ["POST", "POST", "GET", "PATCH"]);
+    assert.ok(calls.every(({ url }) => !url.includes("private") && !url.includes("updated")));
+  } finally { restore(); }
+});
+
+test("different plan revisions receive different deterministic document IDs", () => {
+  const base = { repository: "org/repo", issueNumber: 7 };
+  assert.notEqual(deterministicPlanDocumentId(base, { issueRevision: "r1" }), deterministicPlanDocumentId(base, { issueRevision: "r2" }));
+  assert.notEqual(deterministicPlanDocumentId(base, { issueRevision: "r1" }), deterministicPlanDocumentId({ repository: "other/repo", issueNumber: 7 }, { issueRevision: "r1" }));
+  assert.equal(deterministicPlanDocumentId(base, {}), null);
+});
+
+test("plan conflict fails closed when the deterministic ID belongs to another issue", async () => {
+  const restore = fixture(async (url, options = {}) => {
+    if (options.method === "POST") return json({ message: "already exists" }, 409);
+    if (options.method === "GET") return json({ $id: String(url).split("/").at(-1), command: "plan", fullName: "other/repo", issueNumber: 7, response: JSON.stringify({ kind: "plan", plan: { repository: "other/repo", issueNumber: 7, issueRevision: "r1", summary: "other" } }) });
+    throw new Error("PATCH_SHOULD_NOT_RUN");
+  });
+  try {
+    await assert.rejects(createDashboardStore(env).persistPlan({ repository: "org/repo", issueNumber: 7, plan: { summary: "new", implementationSteps: ["apply the planned change"], testPlan: ["run the focused test suite"], issueRevision: "r1" } }), /PLAN_PERSISTENCE_UNAVAILABLE/);
+  } finally { restore(); }
+});
+
+test("listPlans prefers a deterministic record over a legacy duplicate revision", async () => {
+  const revision = "r1";
+  const deterministic = deterministicPlanDocumentId({ repository: "org/repo", issueNumber: 7 }, { issueRevision: revision });
+  const restore = fixture(async (url) => {
+    assert.match(String(url), /queries%5B%5D=/);
+    return json({ documents: [
+      { $id: "legacy", command: "plan", fullName: "org/repo", repository: "org/repo", issueNumber: 7, response: JSON.stringify({ kind: "plan", plan: { repository: "org/repo", issueNumber: 7, issueRevision: revision, summary: "legacy" } }) },
+      { $id: deterministic, command: "plan", fullName: "org/repo", repository: "org/repo", issueNumber: 7, response: JSON.stringify({ kind: "plan", plan: { repository: "org/repo", issueNumber: 7, issueRevision: revision, summary: "deterministic" } }) },
+    ] });
+  });
+  try {
+    const plans = await createDashboardStore(env).listPlans({ repository: "org/repo", issueNumber: 7 });
+    assert.equal(plans.length, 1);
+    assert.equal(plans[0].$id, deterministic);
+    assert.equal(plans[0].plan.summary, "deterministic");
+  } finally { restore(); }
+});
+
+test("listPlans pages through older records before deduplicating logical revisions", async () => {
+  const revision = "r1";
+  const deterministic = deterministicPlanDocumentId({ repository: "org/repo", issueNumber: 7 }, { issueRevision: revision });
+  const restore = fixture(async (url) => {
+    const queries = new URL(url).searchParams.getAll("queries[]").map(JSON.parse);
+    const offset = queries.find((query) => query.method === "offset")?.values?.[0] || 0;
+    if (!offset) return json({ documents: Array.from({ length: 100 }, (_, index) => ({ $id: `legacy-${index}`, command: "plan", fullName: "org/repo", repository: "org/repo", issueNumber: 7, response: JSON.stringify({ kind: "plan", plan: { repository: "org/repo", issueNumber: 7, issueRevision: `old-${index}`, summary: "old" } }) })) });
+    return json({ documents: [{ $id: deterministic, command: "plan", fullName: "org/repo", repository: "org/repo", issueNumber: 7, response: JSON.stringify({ kind: "plan", plan: { repository: "org/repo", issueNumber: 7, issueRevision: revision, summary: "deterministic" } }) }] });
+  });
+  try {
+    const plans = await createDashboardStore(env).listPlans({ repository: "org/repo", issueNumber: 7 });
+    assert.equal(plans.some((plan) => plan.$id === deterministic), true);
   } finally { restore(); }
 });
 

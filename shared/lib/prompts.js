@@ -264,6 +264,61 @@ Return markdown with:
   }
 }
 
+export function buildIssuePlanPrompt(context) {
+  return `You are a senior software engineer preparing a read-only implementation plan for a GitHub issue.
+
+Use only the repository evidence below. Do not invent files, APIs, or requirements. Return valid JSON only, with no markdown or code fences.
+
+Return exactly:
+{
+  "summary": "short issue and proposed direction",
+  "understanding": "what the issue asks for",
+  "affectedFiles": [{ "path": "relative/path", "reason": "why relevant", "plannedChange": "what a future patch may change" }],
+  "implementationSteps": ["ordered step"],
+  "testPlan": ["specific test or verification"],
+  "risks": ["regression or compatibility concern"],
+  "assumptions": ["explicit assumption"],
+  "confidence": "low | medium | high"
+}
+
+Rules:
+- This is planning only; do not claim that files were changed.
+- Prefer evidence from relevant files, commits, pull requests, and issue discussion.
+- Keep every list bounded and concise.
+- If evidence is missing, state that in assumptions and lower confidence.
+
+REPOSITORY CONTEXT:
+${context}`;
+}
+
+export function buildIssuePatchPrompt(plan, context) {
+  return `You are a senior software engineer generating a proposed patch for an already approved issue plan.
+
+Use only the issue plan and bounded repository context below. Return valid JSON only: no markdown, prose outside JSON, or code fences.
+
+Return exactly:
+{
+  "summary": "short patch summary",
+  "files": [{ "path": "relative/path", "operation": "modify | add | delete", "reason": "why this file changes", "additions": 0, "deletions": 0 }],
+  "diff": "unified diff text",
+  "implementationNotes": ["note"],
+  "risks": ["risk"],
+  "testCommand": "npm test"
+}
+
+Rules:
+- Modify only files present in the bounded repository context; do not invent paths.
+- Never include secrets, credentials, environment values, or private keys.
+- Keep the patch focused on the plan and provide a valid unified diff.
+- Use only an allowed repository test command.
+
+ISSUE PLAN:
+${JSON.stringify(plan)}
+
+BOUNDED REPOSITORY CONTEXT:
+${JSON.stringify(context)}`;
+}
+
 export function buildPrCommandPrompt(command, diff) {
   const base = `PR DIFF:
 ${diff.slice(0, 15000)}

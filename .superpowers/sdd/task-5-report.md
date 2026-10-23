@@ -130,6 +130,123 @@ Date: 2026-10-21
 - `npm run validate:config` — passed; 4 declared functions and 5 workflow entrypoints.
 - `npm run check:dashboard` — passed.
 
+## Latest production verification and future-implementation handoff
+
+Date: 2026-10-22 (Appwrite timestamps below are UTC on 2026-10-21)
+
+### Reviewer Function
+
+- Active reviewer deployment: `6ad8f1a56fb70a74b6b3`
+- Status: `ready`; `activate=true`
+- Function ID: `69f76805000e6d129f17`
+- The deployment was created after the NVIDIA request-shape and planner-timeout fixes.
+
+### Fresh signed `/plan` execution
+
+- Direct signed webhook response: HTTP `200`, body `OK`.
+- Appwrite execution: `6ad8f1ef0cb11aa85d14`
+- Execution status: `completed`; response status `200`.
+- Deployment used: `6ad8f1a56fb70a74b6b3`.
+- Secret-safe lifecycle logs observed in order:
+  - `PLAN_GENERATION_STARTED`
+  - `PLAN_GENERATION_SUCCEEDED`
+  - `PLAN_PERSISTENCE_SUCCEEDED`
+- Persisted plan record count for `command=plan`: `5`.
+- Latest persisted record metadata:
+  - Provider: `nvidia`
+  - Model: `nvidia/nemotron-3-ultra-550b-a55b`
+
+The latest stored plan is the expected safe result for issue `#33`, whose body contains only `/plan` and no actionable requirements. No repository files were changed by the plan flow.
+
+### Dashboard Function
+
+- Latest active dashboard deployment: `6ad8ded89962f088d4f5`
+- Status: `ready`; `activate=true`.
+- The dashboard deployment command ran the syntax, test, config, and static dashboard checks before variable synchronization. The observed test suite result was `200 passed, 0 failed`.
+
+### Remaining evidence gap
+
+- A direct GitHub API read performed after the successful Appwrite execution did not show a newly updated bot plan comment; the previous deterministic plan comment and safe failure comments remain visible.
+- Appwrite recorded `PLAN_PERSISTENCE_SUCCEEDED`, so the stored plan path is confirmed, but the GitHub comment side effect should be rechecked with a fresh command and execution if GitHub visibility is part of the next implementation acceptance test.
+- Do not enable paid models to close this gap. NVIDIA remains primary and OpenRouter remains free-only fallback.
+
+## GitHub comment reconciliation instrumentation
+
+Date: 2026-10-22
+
+- Added explicit, secret-safe outcome markers to the successful `/plan` path:
+  - `PLAN_COMMENT_CREATED`
+  - `PLAN_COMMENT_UPDATED`
+  - `PLAN_COMMENT_UNCHANGED`
+- The existing deterministic marker and idempotent create/update behavior are unchanged.
+- Added a regression test for the unchanged-body retry path; it confirms no second GitHub write occurs.
+- Verification: `npm test` — `201 passed, 0 failed`; `npm run check`, `npm run validate:config`, `npm run check:dashboard`, and `git diff --check` passed.
+
+### Production deployment and verification
+
+- Reviewer deployment: `6ad96f4d6099345f4613`
+- Status: `ready`; `activate=true`.
+- Fresh GitHub command comment: `https://github.com/mdsarfarazalam840/ai-agentrouter/issues/33#issuecomment-6330939600`
+- Appwrite execution completed with HTTP `200` and used deployment `6ad96f4d6099345f4613`.
+- Lifecycle logs included:
+  - `PLAN_GENERATION_STARTED`
+  - `PLAN_GENERATION_SUCCEEDED`
+  - `PLAN_COMMENT_UNCHANGED`
+  - `PLAN_PERSISTENCE_SUCCEEDED`
+- Direct GitHub API verification showed the existing deterministic plan comment remains visible. The unchanged outcome is expected idempotent behavior, not a missing comment.
+
+## Deterministic plan persistence enhancement
+
+Date: 2026-10-22
+
+- `shared/lib/dashboard-store.js` now derives plan document IDs as `plan-<24 hex characters>` from `{ kind, fullName, issueNumber, issueRevision }`.
+- A repeated write for the same logical issue revision uses the same Appwrite document. Concurrent POST conflicts are handled by fetching, validating identity, and PATCHing the existing deterministic document.
+- Plan writes without a usable `issueRevision` retain the random-ID compatibility fallback.
+- `listPlans()` deduplicates legacy random-ID records against deterministic records and prefers the deterministic record for the same logical revision.
+- Dashboard-generated plan responses now return `planId` from the persisted record.
+- Patch documents remain random-ID history records and are unchanged.
+- New coverage includes stable IDs, revision/repository separation, conflict updates, conflict identity rejection, legacy deduplication, and generated dashboard `planId` consistency.
+
+### Deployment
+
+- Reviewer deployment: `6ad982c7733c776a2ba6` — `ready`, active.
+- Dashboard deployment: `6ad984591408108ee4c7` — `ready`, active.
+- Both deployments ran the complete pre-deployment check/test/config/dashboard suite and completed successfully.
+
+## Reliability hardening: bounded pagination and production smoke test
+
+Date: 2026-10-23
+
+- Added `listIssueComments()` with page-size and page-count caps. It is used by issue planning context, `/plan`, `/patch`, and issue-revision calculation paths.
+- Issue comment pagination now reaches markers beyond the first 100 comments and fails closed with `ISSUE_COMMENTS_TOO_LARGE`/`ISSUE_CONTEXT_INCOMPLETE` at the fixed bound.
+- `listPlans()` now pages through up to 1,000 plan records before deduplicating deterministic and legacy records.
+- Added regression coverage for comment pagination, bounded failure, and plan-list pagination.
+- Verification: `npm test` — `209 passed, 0 failed`; `npm run check`, `npm run validate:config`, `npm run check:dashboard`, and `npm audit --omit=dev --audit-level=high` passed (`0 vulnerabilities`).
+
+### Production deployment and smoke test
+
+- Reviewer deployment: `6adabbaf6146a78a0423` — `ready`, active.
+- Dashboard deployment: `6adabc9c6fd7bf8684a2` — `ready`, active.
+- Fresh GitHub `/plan` command: `https://github.com/mdsarfarazalam840/ai-agentrouter/issues/33#issuecomment-6355416319`.
+- Appwrite execution completed with HTTP `200` on reviewer deployment `6adabbaf6146a78a0423`.
+- Secret-safe lifecycle markers included `PLAN_GENERATION_STARTED`, `PLAN_GENERATION_SUCCEEDED`, `PLAN_COMMENT_UNCHANGED`, and `PLAN_PERSISTENCE_SUCCEEDED`.
+- Backend A now contains the deterministic plan document `plan-3375c7b2d27b777f03089fd1` for issue `mdsarfarazalam840/ai-agentrouter#33`, while prior legacy random-ID records remain readable.
+- No paid model was enabled or used.
+
+## Next-level production hardening
+
+Date: 2026-10-23
+
+- Delivery recovery is now lease-aware: active processing attempts remain blocked, expired attempts are reclaimable with a new immutable attempt ID, completed attempts remain duplicate barriers, and ambiguous bounded history fails closed.
+- All marker/status lookups now use bounded pagination: issue comments, pull review comments, summary comments, inline review comments, and commit statuses.
+- Dashboard authorization now supports optional per-user repository narrowing through `DASHBOARD_USER_REPOSITORIES`, while preserving the existing global allowlist as the upper bound.
+- Added six runtime/security regression tests; total suite is now `215 passed, 0 failed`.
+- Reviewer deployment: `6adac4e4c2a9a0b4f088` — `ready`, active.
+- Dashboard deployment: `6adac5cea294410b6a6f` — `ready`, active.
+- Fresh production `/plan` command: `https://github.com/mdsarfarazalam840/ai-agentrouter/issues/33#issuecomment-6355919853`.
+- Appwrite execution completed with HTTP `200` on reviewer deployment `6adac4e4c2a9a0b4f088` and logged `PLAN_GENERATION_STARTED`, `PLAN_GENERATION_SUCCEEDED`, `PLAN_COMMENT_UNCHANGED`, and `PLAN_PERSISTENCE_SUCCEEDED`.
+- No paid model, repository mutation, or untrusted code execution was introduced.
+
 ## Final whole-branch review follow-up
 
 Date: 2026-10-21
@@ -191,6 +308,30 @@ Date: 2026-10-21
 - Added bounded fallback-comment assertions proving raw provider errors, persistence errors, and private issue text are not included in the failure comment.
 - Added persistence failure coverage asserting `PLAN_PERSISTENCE_SUCCEEDED` is not emitted and the delivery is released for retry.
 - Production code was unchanged; the existing marker and safe fallback behavior passed these focused tests.
+
+## Final reviewed fix deployment
+
+- Final reviewed fix commit: `fde38f5`.
+- Final Appwrite reviewer deployment: `6ad8339cccc2c2673938`.
+- Verified deployment status: `ready`; `activate=true`.
+- Pre-deployment verification: `npm test` — 196 passed; `npm run check`, `npm run validate:config`, and `npm run check:dashboard` passed.
+- A direct CLI upload first hit the Appwrite archive-size limit; the repository deployment script completed packaging and produced the ready deployment above.
+- No fresh production `/plan` was run after this final deployment because the previous provider-generation failure and authenticated dashboard browser timeout remain unresolved; no success claim is made for those acceptance gaps.
+
+## Dashboard empty-state fix
+
+- Root cause: the dashboard Function remained on the older deployment `6ad5b23edb5803ee9fed`; the dashboard issue collection already contained 3 plan records.
+- Deployment packaging failed because the repository-root archive exceeded Appwrite's upload limit.
+- Fixed `scripts/deploy-functions.ps1` to stage only `package.json`, `package-lock.json`, the selected Function entrypoint, and `shared/lib/*` before uploading.
+- Added regression coverage for bounded Function staging.
+- Redeployed dashboard Function as `6ad8c7378fe71711d09c`; verified `ready` and `activate=true`.
+
+## Dashboard data-key correction
+
+- Live diagnosis showed the dashboard Function's `APPWRITE_DATA_API_KEY` was not valid for the configured Backend A project; the same collection query returned HTTP 401 from the dashboard key and 3 documents with the Backend A key.
+- Corrected the private `.env.appwrite.local` value to use the Backend A API key for the Backend A data project.
+- Redeployed the dashboard Function after syncing the corrected private variable; final deployment `6ad8cce978e8bd5167de` is `ready` and active.
+- Independent collection query now returns HTTP 200 with `total=3` plan documents.
 
 ### Verification
 

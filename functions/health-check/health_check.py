@@ -24,7 +24,7 @@ def run_appwrite_command(args: list[str], capture_json: bool = True) -> str:
         args: List of command arguments.
         capture_json: Whether to append --json and return the stdout.
     """
-    full_command = ["appwrite"] + args
+    full_command = ["npx", "--yes", "appwrite-cli@6.1.0"] + args
     if capture_json:
         full_command.append("--json")
     
@@ -47,9 +47,9 @@ def run_appwrite_command(args: list[str], capture_json: bool = True) -> str:
 def check_dependencies() -> None:
     """Check if required external tools are available."""
     try:
-        subprocess.run(["appwrite", "--version"], capture_output=True, check=True)
+        subprocess.run(["npx", "--yes", "appwrite-cli@6.1.0", "--version"], capture_output=True, check=True)
     except (subprocess.CalledProcessError, FileNotFoundError):
-        fail("Appwrite CLI not found. Please install it with 'npm install -g appwrite-cli'.")
+        fail("Pinned Appwrite CLI could not be executed through npx.")
 
 
 def main() -> None:
