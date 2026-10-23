@@ -1,0 +1,110 @@
+name: Approved Patch Validation
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_sha:
+        description: "Immutable commit SHA to validate against"
+        required: true
+        type: string
+      patch_bundle_b64:
+        description: "Base64url validation bundle containing the approved patch and snapshot"
+        required: true
+        type: string
+      test_command:
+        description: "Server-owned validation command"
+        required: true
+        default: "npm run check"
+        type: string
+      correlation_id:
+        description: "Opaque job correlation ID"
+        required: false
+        type: string
+  repository_dispatch:
+    types: [approved-patch-validation]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: approved-patch-validation-${{ github.event_name == 'workflow_dispatch' && inputs.correlation_id || github.event.client_payload.correlation_id || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      DISPATCH_TARGET_SHA: ${{ inputs.target_sha }}
+      PAYLOAD_TARGET_SHA: ${{ github.event.client_payload.target_sha }}
+      DISPATCH_BUNDLE: ${{ inputs.patch_bundle_b64 }}
+      PAYLOAD_BUNDLE: ${{ github.event.client_payload.patch_bundle_b64 }}
+      DISPATCH_COMMAND: ${{ inputs.test_command }}
+      PAYLOAD_COMMAND: ${{ github.event.client_payload.test_command }}
+
+    steps:
+      - name: Resolve dynamic validation inputs
+        id: input
+        shell: bash
+        run: |
+          set -euo pipefail
+          target_sha="${DISPATCH_TARGET_SHA:-${PAYLOAD_TARGET_SHA}}"
+          bundle="${DISPATCH_BUNDLE:-${PAYLOAD_BUNDLE}}"
+          command="${DISPATCH_COMMAND:-${PAYLOAD_COMMAND:-npm run check}}"
+          [[ "$target_sha" =~ ^[a-fA-F0-9]{40}$ ]]
+          [[ -n "$bundle" ]]
+          case "$command" in
+            "npm test"|"npm run check"|"npm run check:dashboard") ;;
+            *) echo "Unsupported validation command" >&2; exit 1 ;;
+          esac
+          {
+            echo "target_sha=$target_sha"
+            echo "test_command=$command"
+            echo "bundle<<EOF"
+            echo "$bundle"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Checkout immutable target
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.input.outputs.target_sha }}
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+          cache: npm
+
+      - name: Install baseline dependencies without lifecycle scripts
+        run: npm ci --ignore-scripts
+
+      - name: Apply approved patch and run bounded validation
+        id: validate
+        env:
+          PATCH_BUNDLE_B64: ${{ steps.input.outputs.bundle }}
+          EXPECTED_SHA: ${{ steps.input.outputs.target_sha }}
+          RUNNER_INSTALL_DEPENDENCIES: "true"
+          VALIDATION_RESULT_PATH: validation-result.json
+        run: node scripts/run-github-patch-validation.mjs
+
+      - name: Publish bounded validation summary
+        if: always()
+        shell: bash
+        run: |
+          if [[ -f validation-result.json ]]; then
+            node -e 'const r=require("./validation-result.json"); console.log(`Validation status: ${r.status}`); console.log(`Tests run: ${r.testsRun}`); console.log(`Exit code: ${r.exitCode ?? "n/a"}`); console.log(`Patch revision: ${r.patchRevision ?? "n/a"}`);' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Validation did not produce a result file." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload bounded validation result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: approved-patch-validation-${{ github.run_id }}
+          path: validation-result.json
+          if-no-files-found: warn
+          retention-days: 7
