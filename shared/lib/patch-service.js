@@ -14,6 +14,12 @@ const VALIDATION_ERRORS = new Set(["GITHUB_DISPATCH_FAILED", "GITHUB_RUN_LOOKUP_
 const sha256 = (value) => crypto.createHash("sha256").update(JSON.stringify(value)).digest("hex").slice(0, 24);
 const failure = (code, status = 409) => Object.assign(new Error(code), { code, status });
 const record = (item) => item?.data || item;
+function normalizePlanPath(value) {
+  if (typeof value !== "string") return "";
+  let path = value.trim().replace(/^`+|`+$/g, "").trim().replaceAll("\\", "/");
+  while (path.startsWith("./")) path = path.slice(2);
+  return path;
+}
 
 // Ignore command/acknowledgement chatter; retain substantive human discussion.
 export async function patchIssueRevision({ octokit, owner, repo, issueNumber, issue }) {
@@ -27,7 +33,7 @@ export async function patchIssueRevision({ octokit, owner, repo, issueNumber, is
 
 // The plan's paths are candidates, never a license to read arbitrary paths from a request.
 export async function capturePatchSnapshot({ octokit, owner, repo, plan }) {
-  const paths = [...new Set((plan.affectedFiles || []).map((file) => file.path))];
+  const paths = [...new Set((plan.affectedFiles || []).map((file) => normalizePlanPath(file?.path)).filter(Boolean))];
   if (!paths.length || paths.length > 30 || paths.some((path) => !isSafePatchPath(path) || path.includes("\\") || path.includes(":") || /(^|\/)(?:\.git|\.github\/workflows|\.opencode|node_modules|\.npmrc|\.gitmodules|secrets?|credentials)(\/|$)/i.test(path))) throw failure("INVALID_PLAN_FILES");
   const repository = (await octokit.repos.get({ owner, repo })).data;
   const branch = repository?.default_branch;

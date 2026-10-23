@@ -123,6 +123,19 @@ test("snapshot reads full text at immutable SHA and rejects truncated source", a
   await assert.rejects(capturePatchSnapshot(args), /INVALID_SNAPSHOT/);
 });
 
+test("snapshot normalizes harmless plan path formatting without weakening blocked-path checks", async () => {
+  const refs = [];
+  const octokit = { repos: {
+    get: async () => ({ data: { default_branch: "main" } }),
+    getCommit: async () => ({ data: { sha: "c".repeat(40) } }),
+    getContent: async ({ path, ref }) => { refs.push({ path, ref }); return { data: { type: "file", encoding: "base64", size: 6, content: Buffer.from("hello\n").toString("base64") } }; },
+  } };
+  const snapshot = await capturePatchSnapshot({ octokit, owner: "owner", repo: "repo", plan: { affectedFiles: [{ path: " ./src\\a.js `" }] } });
+  assert.deepEqual(refs, [{ path: "src/a.js", ref: "c".repeat(40) }]);
+  assert.equal(snapshot.files[0].path, "src/a.js");
+  await assert.rejects(capturePatchSnapshot({ octokit, owner: "owner", repo: "repo", plan: { affectedFiles: [{ path: ".github/workflows/ci.yml" }] } }), /INVALID_PLAN_FILES/);
+});
+
 test("snapshot fails closed on oversized aggregate and symlinks", async () => {
   const content = "x".repeat(11000);
   const octokit = { repos: {
