@@ -51,7 +51,25 @@ function renderPlan(plan) {
     els.drawerContent.append(create, history, patchArea);
     const repository = plan.repository, issueNumber = Number(plan.issueNumber), accountEpoch = state.epoch;
     const current = () => state.account && accountEpoch === state.epoch && target === state.drawerEpoch && els.drawer.classList.contains('open');
-    let proposal = null, patchId = null, cached = false, validation = null, busy = false;
+    let proposal = null, patchId = null, cached = false, validation = null, busy = false, pollTimer = null, pollAttempts = 0;
+    const pendingValidation = () => ['validation_queued', 'validation_running'].includes(proposal?.status || validation?.status);
+    const applyValidation = (data) => { proposal = data.patch || proposal; patchId = data.patchId || patchId; validation = data.validation || proposal?.validation || validation; };
+    const pollValidation = async () => {
+      pollTimer = null;
+      if (!current() || !pendingValidation() || !patchId || !proposal?.patchRevision) return;
+      if (pollAttempts++ >= 30) { message('Validation is still running; refresh the patch history to check again.', true); return; }
+      try {
+        const data = await callDashboard('patch-validate-status', { repository, issueNumber, ...patchIdentity(proposal, patchId) });
+        if (!current()) return;
+        applyValidation(data); redraw();
+        if (pendingValidation()) pollTimer = setTimeout(pollValidation, 2000);
+        else message('');
+      } catch (error) {
+        if (current() && pollAttempts < 30) pollTimer = setTimeout(pollValidation, 5000);
+        else if (current()) message(error.message || 'Validation status unavailable.', true);
+      }
+    };
+    const startPolling = () => { if (current() && pendingValidation() && !pollTimer) { pollAttempts = 0; pollTimer = setTimeout(pollValidation, 0); } };
     const redraw = () => { historyItems.querySelectorAll('button').forEach((item) => { item.disabled = busy; }); renderPatch(patchArea, proposal, { patchId, cached, validation, busy,
       onApprove: () => transition('patch-validate'), onReject: () => transition('patch-reject'), onRegenerate: () => generate(true),
       onCopy: async () => { try { await navigator.clipboard.writeText(proposal.diff); if (current()) message('Diff copied.'); } catch { if (current()) message('Copy unavailable. Use the diff text to copy manually.', true); } },
@@ -67,7 +85,7 @@ function renderPlan(plan) {
           const item = document.createElement('button'); item.type = 'button'; item.className = 'ghost-button';
           item.textContent = `${text(entry.patch?.status)} · ${formatDate(entry.createdAt)} · ${text(entry.patchId)}`;
           item.disabled = busy;
-          item.addEventListener('click', () => { if (!current() || busy) return; proposal = entry.patch; patchId = entry.patchId; validation = entry.validation || null; cached = true; create.disabled = true; create.textContent = 'Patch proposal'; redraw(); });
+          item.addEventListener('click', () => { if (!current() || busy) return; proposal = entry.patch; patchId = entry.patchId; validation = entry.validation || null; cached = true; create.disabled = true; create.textContent = 'Patch proposal'; redraw(); startPolling(); });
           historyItems.append(item);
         }
         if (selectLatest && patches.length && !proposal && !busy) historyItems.firstChild.click();
@@ -89,15 +107,14 @@ function renderPlan(plan) {
     async function transition(action) {
       if (!current() || busy || proposal?.status !== 'proposed') return;
       const identity = patchIdentity(proposal, patchId); if (!identity) return;
-      busy = true; redraw(); message(action === 'patch-validate' ? 'Applying patch in isolated workspace; awaiting server validation…' : 'Rejecting patch…');
+       busy = true; redraw(); message(action === 'patch-validate' ? 'Queueing disposable GitHub-hosted validation…' : 'Rejecting patch…');
       try {
         const data = await callDashboard(action, { repository, issueNumber, ...identity, ...(action === 'patch-validate' ? { approved: true } : {}) });
         if (!current() || patchId !== identity.patchId || proposal?.patchRevision !== identity.patchRevision) return;
-        proposal = data.patch || { ...proposal, status: data.status || (action === 'patch-reject' ? 'rejected' : 'validation_unavailable') };
-        patchId = data.patchId || patchId;
-        validation = data.validation || proposal.validation || (action === 'patch-validate' ? { status: proposal.status, testsRun: false } : null);
-        message('');
-        await loadHistory();
+         applyValidation(data);
+         message('');
+         await loadHistory();
+         if (action === 'patch-validate') startPolling();
       } catch (error) { if (current()) { if (/PATCH_STALE|PATCH_REVISION_MISMATCH/.test(error.message || '')) proposal = { ...proposal, status: 'expired' }; message(error.message || 'Patch action failed.', true); } }
       finally { busy = false; if (current()) redraw(); }
     }

@@ -1,0 +1,57 @@
+<!doctype html>
+<html>
+  <body>
+    <button id="run">Run Profile Insights</button>
+    <pre id="output"></pre>
+
+    <script src="https://cdn.jsdelivr.net/npm/appwrite@17"></script>
+        <script>
+            const client = new Appwrite.Client()
+                .setEndpoint("https://fra.cloud.appwrite.io/v1")
+                .setProject("69f2da78000231a299a3");
+
+            const account = new Appwrite.Account(client);
+            const functions = new Appwrite.Functions(client);
+
+            async function ensureSession() {
+                try {
+                // Reuse the existing browser session.
+                const user = await account.get();
+                console.log("Using existing Appwrite user:", user.$id);
+                return user;
+                } catch (error) {
+                // No active session: create one.
+                if (error.code !== 401) {
+                    throw error;
+                }
+
+                return await account.createEmailPasswordSession(
+                    "ajaysin840@gmail.com",
+                    "Vicky123-"
+                );
+                }
+            }
+
+    async function runProfileInsights() {
+        await ensureSession();
+
+        const execution = await functions.createExecution(
+        "69f2e0a80020c6e7b862",
+        JSON.stringify({
+            task: "review",
+            username: "octocat"
+        }),
+        false
+        );
+
+        console.log(execution);
+    }
+
+    async function logout() {
+        await account.deleteSession("current");
+        console.log("Appwrite session deleted");
+    }
+    </script>
+  </body>
+</html>
+

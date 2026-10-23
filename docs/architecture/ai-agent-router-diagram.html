@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>AI Agent Router — runtime boundaries</title>
+<style>
+:root{color-scheme:light;--paper:#fafafa;--ink:#171717;--muted:#4d4d4d;--accent:#7928ca;--link:#0070f3}*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:16px Geist,Arial,sans-serif}main{max-width:1120px;margin:auto;padding:32px 24px}h1{font:40px 'Instrument Serif',Georgia,serif;margin:8px 0}p{line-height:1.6}.eyebrow{font:12px 'Geist Mono',monospace;letter-spacing:.12em;color:var(--muted)}.canvas{overflow-x:auto;border:1px solid #a1a1a1;border-radius:8px}svg{display:block;width:100%;min-width:1040px;height:auto}.node{fill:#fafafa;stroke:#a1a1a1;stroke-width:1.5;rx:6}.focus{fill:#f0e8f7;stroke:#7928ca}.external{stroke-dasharray:5 4}.name{font:600 18px Geist,Arial,sans-serif;fill:#171717}.detail{font:12px 'Geist Mono',monospace;fill:#4d4d4d}.route{fill:none;stroke:#0070f3;stroke-width:2;marker-end:url(#runtime-arrow)}.legend{font:14px Geist,Arial,sans-serif;fill:#4d4d4d}section{border-top:1px solid #a1a1a1;margin-top:24px;padding-top:12px}li{margin:10px 0;line-height:1.5}a{color:#0070f3}code{font-size:.9em}
+</style></head><body><main>
+<div class="eyebrow">ARCHITECTURE / WORKING-TREE EVIDENCE / 14 OCTOBER 2026</div>
+<h1>Three functions, shared integrations</h1>
+<p>Runtime overview · doc-wide, static, engineer audience. Authentication is enforced inside handlers; the profile adapter remains an operator integration requirement.</p>
+<div class="canvas"><svg viewBox="0 0 1040 620" role="img" aria-labelledby="ai-agent-router-diagram-title ai-agent-router-diagram-desc">
+<title id="ai-agent-router-diagram-title">AI Agent Router runtime boundaries</title>
+<desc id="ai-agent-router-diagram-desc">GitHub webhooks enter an HMAC-protected review function that claims delivery attempts and calls shared providers, while profile insights requires trusted runtime identity and health check reports only liveness.</desc>
+<defs><marker id="runtime-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8Z" fill="#0070f3"/></marker></defs>
+<rect x="352" y="32" width="312" height="512" rx="8" fill="#f5f5f5" stroke="#a1a1a1" stroke-dasharray="5 4"/>
+<text x="376" y="60" class="detail">APPWRITE FUNCTION HANDLERS</text>
+<path class="route" d="M272 140 H376"/><path class="route" d="M640 140 H752"/>
+<path class="route" d="M464 184 V232 Q464 240 456 240 H192 Q184 240 184 248 V296"/>
+<path class="route" d="M552 184 V248 Q552 256 560 256 H872 Q880 256 880 264 V296"/>
+<path class="route" d="M640 340 H752"/>
+<path class="route" d="M608 296 V216 Q608 208 616 208 H824 Q832 208 832 200 V184"/>
+<rect class="node external" x="32" y="96" width="240" height="88"/><text class="name" x="48" y="128">GitHub webhooks</text><text class="detail" x="48" y="152">PR / issues / comments</text><text class="detail" x="48" y="172">Signed raw request bytes</text>
+<rect class="node focus" x="376" y="96" width="264" height="88"/><text class="name" x="392" y="128">PR Review</text><text class="detail" x="392" y="152">HMAC → claim → dispatch</text><text class="detail" x="392" y="172">Invalid signature: 401</text>
+<rect class="node external" x="752" y="96" width="256" height="88"/><text class="name" x="768" y="128">GitHub API</text><text class="detail" x="768" y="152">App token / profile reads</text><text class="detail" x="768" y="172">Comments, labels, status</text>
+<rect class="node" x="32" y="296" width="240" height="88"/><text class="name" x="48" y="328">Delivery attempts</text><text class="detail" x="48" y="352">Appwrite Database REST</text><text class="detail" x="48" y="372">Non-atomic list + create</text>
+<rect class="node focus" x="376" y="296" width="264" height="88"/><text class="name" x="392" y="328">Profile Insights</text><text class="detail" x="392" y="352">req.appwrite identity seam</text><text class="detail" x="392" y="372">No adapter here; else 401</text>
+<rect class="node external" x="752" y="296" width="256" height="88"/><text class="name" x="768" y="328">NVIDIA → OpenRouter</text><text class="detail" x="768" y="352">5s attempt / 20s total</text><text class="detail" x="768" y="372">Caller fallback on failure</text>
+<rect class="node" x="376" y="440" width="264" height="80"/><text class="name" x="392" y="472">Health Check</text><text class="detail" x="392" y="496">Static JSON; no dependency probe</text>
+<text class="legend" x="32" y="580">Solid box: code or store · dashed box: external service · blue arrow: API call · violet: ingress gates</text>
+</svg></div>
+<section><h2>Failure and trust contracts</h2><ul>
+<li><strong>Profile identity is a seam, not a shipped authenticator.</strong> Only non-empty identity fields on <code>req.appwrite</code> are checked. No adapter, JWT validation, or execute-permission provisioning is included. Headers and body identity claims are rejected. Configure and verify the trusted adapter before enabling access.</li>
+<li><strong>At-least-once, not exactly-once.</strong> Claim list/create and GitHub list/write races remain. Released attempts can retry; crashed processing attempts block until operator intervention. Lease expiry does not trigger takeover. Issue and PR command replies use direct comment creation and can duplicate after partial failure.</li>
+<li><strong>Bounds are per operation.</strong> The shared LLM budget is 20 seconds, attempts at most 5 seconds, SDK retries disabled. NVIDIA can exhaust the budget before OpenRouter. PR diff is 64 KiB; weekly activity is at most five repositories, ten items per endpoint, concurrency three. Health does not verify providers, credentials, database, or GitHub.</li>
+</ul></section>
+<section><h2>Build and deployment path</h2><p>PR CI: <code>npm ci → check → validate:config → test → audit</code>. Push/manual deploy: checks, config validation, and tests gate Appwrite CLI 6.1.0 deployments to the production environment. The deploy workflow has no audit step; branch protection and environment approvals are operator settings, not proven here. Only reviewer and health are in Appwrite configuration; profile must already exist.</p></section>
+<p><a href="ai-agent-router.html">Interactive Archify overview</a> · <a href="evidence.md">Source evidence and limitations</a></p>
+<p class="eyebrow">Companion: cathrynlavery/diagram-design · installed customized palette · offline system font fallbacks; no remote assets</p>
+</main></body></html>

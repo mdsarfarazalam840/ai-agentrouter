@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": { "title": "AI Agent Router", "quality_profile": "showcase", "locale": "en" },
+  "components": [
+    { "id": "webhooks", "type": "external", "label": "GitHub webhooks", "sublabel": "PRs · issues · commands", "pos": [40, 100], "size": [200, 76] },
+    { "id": "reviewer", "type": "security", "label": "PR Review function", "sublabel": "Raw-body HMAC gate", "pos": [400, 100], "size": [200, 76] },
+    { "id": "github", "type": "external", "label": "GitHub API", "sublabel": "Read + review effects", "pos": [760, 100], "size": [200, 76] },
+    { "id": "ledger", "type": "database", "label": "Delivery attempts", "sublabel": "Appwrite Database", "pos": [40, 270], "size": [200, 76] },
+    { "id": "providers", "type": "external", "label": "NVIDIA → OpenRouter", "sublabel": "5s attempts · 20s total", "pos": [400, 270], "size": [220, 76] },
+    { "id": "profile", "type": "backend", "label": "Profile Insights", "sublabel": "req.appwrite identity seam", "pos": [760, 270], "size": [220, 76] },
+    { "id": "ci", "type": "backend", "label": "GitHub Actions", "sublabel": "Checks → CLI deployment", "pos": [40, 440], "size": [200, 76] },
+    { "id": "functions", "type": "cloud", "label": "Appwrite Functions", "sublabel": "Three Node.js handlers", "pos": [400, 440], "size": [220, 76] },
+    { "id": "health", "type": "backend", "label": "Health Check", "sublabel": "Static liveness only", "pos": [760, 440], "size": [220, 76] }
+  ],
+  "connections": [
+    { "from": "webhooks", "to": "reviewer", "label": "HMAC", "variant": "security" },
+    { "from": "reviewer", "to": "github", "label": "App token" },
+    { "from": "reviewer", "to": "ledger", "label": "Claim" },
+    { "from": "reviewer", "to": "providers", "label": "Prompt", "fromSide": "bottom", "toSide": "top" },
+    { "from": "profile", "to": "providers", "label": "Prompt" },
+    { "from": "profile", "to": "github", "label": "Read", "fromSide": "top", "toSide": "bottom" },
+    { "from": "ci", "to": "functions", "label": "CLI 6.1.0", "variant": "dashed" },
+    { "from": "functions", "to": "health", "label": "Invoke", "variant": "dashed" }
+  ]
+}

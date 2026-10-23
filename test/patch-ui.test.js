@@ -17,6 +17,8 @@ test('only persisted proposed revision can be approved', () => {
 });
 
 test('unavailable validation never claims tests passed', () => {
+  assert.match(validationMessage({ status: 'validation_queued', testsRun: false }), /queued/i);
+  assert.match(validationMessage({ status: 'validation_running', testsRun: false }), /running/i);
   assert.match(validationMessage({ status: 'validation_unavailable', testsRun: false }), /tests not run/i);
   assert.match(validationMessage({ status: 'validated', testsRun: false }), /tests not run/i);
   assert.match(validationMessage({ status: 'validated', testsRun: true }), /tests passed/i);
@@ -39,6 +41,6 @@ test('diff and validation output are inserted as text, with approval disabled wi
     assert.equal(all(root).filter((item) => item.tag === 'img').length, 0);
     assert.equal(all(root).filter((item) => item.tag === 'code').length, 2);
     assert.equal(all(root).filter((item) => item.textContent === markup).length, 2);
-    assert.equal(all(root).find((item) => item.textContent === 'Approve and apply in isolated workspace').disabled, true);
+    assert.equal(all(root).find((item) => item.textContent === 'Approve and queue validation').disabled, true);
   } finally { globalThis.document = previous; }
 });

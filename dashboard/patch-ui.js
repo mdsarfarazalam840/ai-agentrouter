@@ -16,6 +16,8 @@ export function canApprovePatch(patch, patchId) {
 
 export function validationMessage(validation) {
   if (!validation) return 'No isolated validation has been run.';
+  if (validation.status === 'validation_queued') return 'Validation queued on the disposable GitHub-hosted runner.';
+  if (validation.status === 'validation_running') return 'Validation is running on the disposable GitHub-hosted runner.';
   if (validation.status === 'validation_unavailable' || validation.testsRun === false) {
     return `Trusted isolated runner unavailable or validation could not run; tests not run. Status: ${validation.status || 'not_run'}.`;
   }
@@ -64,7 +66,7 @@ export function renderPatch(container, patch, { patchId, cached, validation, bus
   field(container, 'SCOPE', 'Approval applies only in an isolated workspace. It does not change GitHub or your live checkout.');
   const controls = document.createElement('div'); controls.className = 'patch-actions';
   const button = (label, callback, disabled) => { const item = node(controls, 'button', label, 'ghost-button'); item.type = 'button'; item.disabled = disabled; item.addEventListener('click', callback); };
-  button('Approve and apply in isolated workspace', onApprove, busy || !canApprovePatch(patch, patchId));
+  button('Approve and queue validation', onApprove, busy || !canApprovePatch(patch, patchId));
   button('Reject patch', onReject, busy || !canApprovePatch(patch, patchId));
   button('Regenerate patch', onRegenerate, busy);
   button('Copy diff', onCopy, busy || typeof patch.diff !== 'string');

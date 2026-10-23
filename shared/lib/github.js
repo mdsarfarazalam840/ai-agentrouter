@@ -35,6 +35,47 @@ export function createGitHubClient(installationId) {
   });
 }
 
+const VALIDATION_WORKFLOW = "approved-patch-validation.yml";
+
+export async function dispatchApprovedPatchValidation({ octokit, owner, repo, targetSha, patchBundleB64, testCommand, correlationId, eventType = "approved-patch-validation" }) {
+  if (!octokit?.repos?.createDispatchEvent || !/^[a-f0-9]{40}$/i.test(targetSha || "") || typeof patchBundleB64 !== "string" || !patchBundleB64 || typeof correlationId !== "string" || !/^[A-Za-z0-9._-]{1,96}$/.test(correlationId)) throw new Error("GITHUB_DISPATCH_INVALID");
+  await octokit.repos.createDispatchEvent({ owner, repo, event_type: eventType, client_payload: { target_sha: targetSha, patch_bundle_b64: patchBundleB64, test_command: testCommand, correlation_id: correlationId } });
+  return { correlationId, targetSha };
+}
+
+function normalizeValidationRun(run, steps = []) {
+  return {
+    runId: Number.isSafeInteger(run?.id) ? run.id : null,
+    status: typeof run?.status === "string" ? run.status : "unknown",
+    conclusion: typeof run?.conclusion === "string" ? run.conclusion : null,
+    url: typeof run?.html_url === "string" ? run.html_url : null,
+    headSha: typeof run?.head_sha === "string" ? run.head_sha : null,
+    createdAt: run?.created_at || null,
+    updatedAt: run?.updated_at || null,
+    steps: Array.isArray(steps) ? steps.map((step) => ({ name: String(step.name || ""), status: step.status || null, conclusion: step.conclusion || null })) : [],
+  };
+}
+
+export async function getApprovedPatchValidationRun({ octokit, owner, repo, correlationId, runId, workflow = VALIDATION_WORKFLOW }) {
+  if (!octokit?.actions || typeof correlationId !== "string" || !/^[A-Za-z0-9._-]{1,96}$/.test(correlationId)) throw new Error("GITHUB_RUN_LOOKUP_INVALID");
+  let run;
+  if (Number.isSafeInteger(Number(runId)) && Number(runId) > 0) {
+    run = (await octokit.actions.getWorkflowRun({ owner, repo, run_id: Number(runId) })).data;
+  } else {
+    const response = await octokit.actions.listWorkflowRunsForRepo({ owner, repo, workflow_id: workflow, event: "repository_dispatch", per_page: 100 });
+    run = (response.data?.workflow_runs || []).find((candidate) => String(candidate.name || "").includes(correlationId));
+  }
+  if (!run) return null;
+  let steps = [];
+  if (Number.isSafeInteger(Number(run.id)) && typeof octokit.actions.listJobsForWorkflowRun === "function") {
+    try {
+      const jobs = (await octokit.actions.listJobsForWorkflowRun({ owner, repo, run_id: Number(run.id), per_page: 100 })).data?.jobs || [];
+      steps = jobs.flatMap((job) => Array.isArray(job.steps) ? job.steps : []);
+    } catch { /* status remains useful even when job details are unavailable */ }
+  }
+  return normalizeValidationRun(run, steps);
+}
+
 export function verifyWebhookSignature({ headers, bodyRaw, body, secret = getWebhookSecret() }) {
   if (!secret) return false;
 

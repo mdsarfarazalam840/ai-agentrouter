@@ -150,19 +150,22 @@ The dashboard Function accepts authenticated Appwrite execution JSON:
 { "action": "patch-history", "repository": "owner/repo", "issueNumber": 123 }
 { "action": "patch-history", "repository": "owner/repo", "issueNumber": 123, "patchId": "<returned-id>" }
 { "action": "patch-validate", "repository": "owner/repo", "issueNumber": 123, "patchId": "<returned-id>", "patchRevision": "<returned-revision>", "approved": true }
+{ "action": "patch-validate-status", "repository": "owner/repo", "issueNumber": 123, "patchId": "<returned-id>", "patchRevision": "<returned-revision>" }
 { "action": "patch-reject", "repository": "owner/repo", "issueNumber": 123, "patchId": "<returned-id>", "patchRevision": "<returned-revision>" }
 ```
 
 After copying `.env.appwrite.local.example`, add `GITHUB_APP_INSTALLATION_ID` to your local
 deployment file; keep it server-only alongside `APP_ID` and `PRIVATE_KEY`.
 
-`patch` returns `{ patch, patchId, cached }`; transitions return `{ patch, patchId }` and
-validation additionally returns `validation`. Requests require Appwrite's authenticated user
+`patch` returns `{ patch, patchId, cached }`; rejection returns `{ patch, patchId }`, approval returns
+`{ patch, patchId, validation }`, and status synchronization returns the latest bounded validation.
+Requests require Appwrite's authenticated user
 identity, an entry in `DASHBOARD_ALLOWED_USER_IDS`, a canonical `owner/repo` entry in the server-only
 `GITHUB_PATCH_ALLOWED_REPOSITORIES` comma-separated allowlist, or exactly `*` to allow every repository exposed by the installed GitHub App, and `GITHUB_APP_INSTALLATION_ID` on Backend B. Empty or malformed values fail closed. `*` does not bypass GitHub App installation scope.
 The same allowlist gates `plan` before GitHub or ledger reads; `overview` and `issues` hide
 out-of-scope stored plan/patch entries while retaining legacy review/analysis history.
-The GitHub App needs **Contents: read** for the snapshot and **Issues: read/write** for issue
+The GitHub App needs **Contents: read** for the snapshot, permission to create repository dispatch
+events for the validation workflow, and **Issues: read/write** for issue
 discussion and plan comments, in addition to existing permissions below. Before making this
 workflow available to users across repositories with different collaborators, require a server-side
 identity binding: **all allowlisted dashboard operators can access every allowlisted repository**;
@@ -178,19 +181,17 @@ unsafe paths, binary/symlink content and unexpected diff targets are rejected. P
 are persisted in the existing issue collection's `response` attribute, capped at **20,000 UTF-8
 bytes**; oversize patches fail instead of truncating. Ensure that attribute supports 20,000 bytes
 and keep its permissions server-only. No paid service or additional infrastructure is introduced.
-History returns persisted proposal IDs and sanitized validation statuses, including `testsRun: false`;
-it never stores runner output or arbitrary error strings.
+History returns persisted proposal IDs and sanitized validation statuses, including queued/running
+states and `testsRun: false`; it never stores runner output or arbitrary error strings.
 
-**Validation boundary:** No trusted isolated runner is configured by default. The deployed Function
-validates the proposed diff in memory; it does **not** run `npm`, repository tests, or model-suggested
-commands. On approval, an otherwise valid diff yields `validation_unavailable` with `testsRun: false`
-and `TRUSTED_RUNNER_UNAVAILABLE`, not a passing result. An OS temporary directory is staging, not an
-execution sandbox. The button's workspace wording and allowlisted test command do not imply tests
-ran. Before connecting a future runner, add an **atomic conditional proposal claim** (current
-read-then-append transitions can race), independently fetch/pin a reviewed package manifest instead
-of using model-selected snapshot paths, inspect allowed script contents and enforce a restricted
-command policy inside an isolated runner with resource/network/time limits. No runtime runner is
-configured or provisioned here.
+**Validation boundary:** The deployed Function never executes repository code locally. On approval it
+persists a queued validation record and dispatches the dynamic bundle to the disposable GitHub-hosted
+workflow described in `docs/approved-patch-validation.md`. The dashboard polls
+`patch-validate-status`; a successful runner step becomes `validated` with `testsRun: true`, while
+queued/running/failed states remain explicit. The workflow still uses server-owned commands, immutable
+checkout, bounded snapshots/output and no application secrets. It is not an exactly-once sandbox:
+duplicate approval requests converge on the same correlation ID, and the eventual broker path should
+still use an atomic conditional claim before enabling concurrent operators.
 
 Plan persistence is idempotent by issue revision. New plans use a deterministic Appwrite document
 ID derived from the canonical repository, issue number, and revision; repeated writes update the

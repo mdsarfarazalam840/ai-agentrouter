@@ -164,9 +164,10 @@ test("patch actions enforce dashboard identity and forward only server-owned inp
   t.after(() => { for (const [name, value] of Object.entries({ DASHBOARD_ALLOWED_USER_IDS: old.allow, GITHUB_APP_INSTALLATION_ID: old.install, GITHUB_PATCH_ALLOWED_REPOSITORIES: old.repos })) value === undefined ? delete process.env[name] : process.env[name] = value; });
   const called = [];
   const handler = createDashboardHandler({ makeStore: () => ({}), makeClient: () => ({}), makeService: () => ({
-    propose: async (args) => { called.push(args); return { patch: { status: "proposed" }, patchId: "abc", cached: false }; },
-    validate: async (args) => { called.push(args); return { validation: { status: "validation_unavailable", testsRun: false } }; },
-    reject: async (args) => { called.push(args); return { patch: { status: "rejected" } }; },
+     propose: async (args) => { called.push(args); return { patch: { status: "proposed" }, patchId: "abc", cached: false }; },
+     validate: async (args) => { called.push(args); return { validation: { status: "validation_unavailable", testsRun: false } }; },
+     validateStatus: async (args) => { called.push(args); return { patch: { status: "validated" }, patchId: "abc", validation: { status: "validated", testsRun: true } }; },
+     reject: async (args) => { called.push(args); return { patch: { status: "rejected" } }; },
   }) });
   const run = async (headers, body) => { let result; await handler({ req: { headers, bodyJson: body }, res: { json: (value, status = 200) => (result = { value, status }) }, log() {} }); return result; };
   const request = { action: "patch", repository: "owner/repo", issueNumber: 7, diff: "forged" };
@@ -175,8 +176,9 @@ test("patch actions enforce dashboard identity and forward only server-owned inp
   const headers = { "x-appwrite-user-id": "authorized", "x-appwrite-user-jwt": "jwt" };
   assert.equal((await run(headers, request)).value.patchId, "abc");
   assert.equal(called[0].diff, undefined);
-  assert.equal((await run(headers, { ...request, action: "patch-validate", patchId: "abc", patchRevision: "a".repeat(24), approved: true })).value.validation.testsRun, false);
-  assert.equal((await run(headers, { ...request, action: "patch-reject", patchId: "abc", patchRevision: "a".repeat(24) })).value.patch.status, "rejected");
+   assert.equal((await run(headers, { ...request, action: "patch-validate", patchId: "abc", patchRevision: "a".repeat(24), approved: true })).value.validation.testsRun, false);
+   assert.equal((await run(headers, { ...request, action: "patch-validate-status", patchId: "abc", patchRevision: "a".repeat(24) })).value.validation.status, "validated");
+   assert.equal((await run(headers, { ...request, action: "patch-reject", patchId: "abc", patchRevision: "a".repeat(24) })).value.patch.status, "rejected");
   assert.equal((await run(headers, { ...request, repository: "invalid" })).status, 400);
 });
 

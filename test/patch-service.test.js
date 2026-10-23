@@ -3,6 +3,7 @@ import test from "node:test";
 import crypto from "node:crypto";
 import { createPatchService, capturePatchSnapshot, patchIssueRevision } from "../shared/lib/patch-service.js";
 import { normalizePatch } from "../shared/lib/patcher.js";
+import { decodeValidationBundle } from "../shared/lib/validation-bundle.js";
 
 const hash = (value) => crypto.createHash("sha256").update(JSON.stringify(value)).digest("hex").slice(0, 24);
 function fixture() {
@@ -54,6 +55,41 @@ test("approval requires exact persisted proposal and no runner is executed", asy
   assert.deepEqual({ status: result.validation.status, testsRun: result.validation.testsRun }, { status: "validation_unavailable", testsRun: false });
   assert.equal(result.patch.status, "validation_unavailable");
   await assert.rejects(f.service.validate({ ...f.args, patchId, patchRevision: patch.patchRevision, approved: true }), /PATCH_STALE/);
+});
+
+test("approval queues one GitHub validation job and later syncs its terminal result", async () => {
+  const f = fixture();
+  const dispatches = [];
+  const originalPersist = f.store.persistPatch;
+  f.store.persistPatch = async (input) => {
+    if (input.documentId) {
+      const row = f.records.find((item) => item.$id === input.documentId);
+      Object.assign(row, { patch: input.patch, validation: input.validation });
+      return row;
+    }
+    return originalPersist(input);
+  };
+  const service = createPatchService({
+    octokit: f.octokit,
+    store: f.store,
+    capture: async () => f.snapshot,
+    generate: async () => f.patch,
+    clock: () => Date.parse(f.patch.createdAt) + 1000,
+    dispatch: async (input) => { dispatches.push(input); return {}; },
+    getRun: async () => ({ runId: 42, status: "completed", conclusion: "success", url: "https://github.com/owner/repo/actions/runs/42", steps: [{ name: "Apply approved patch and run bounded validation", status: "completed", conclusion: "success" }] }),
+  });
+  const proposal = await service.propose(f.args);
+  const queued = await service.validate({ ...f.args, patchId: proposal.patchId, patchRevision: proposal.patch.patchRevision, approved: true });
+  assert.equal(queued.patch.status, "validation_queued");
+  assert.equal(queued.validation.testsRun, false);
+  assert.equal(dispatches.length, 1);
+  const bundle = decodeValidationBundle(dispatches[0].patchBundleB64);
+  assert.equal(bundle.targetSha, f.snapshot.baseSha);
+  const completed = await service.validate({ ...f.args, patchId: queued.patchId, patchRevision: queued.patch.patchRevision, approved: true });
+  assert.equal(completed.patch.status, "validated");
+  assert.equal(completed.validation.testsRun, true);
+  assert.equal(completed.validation.exitCode, 0);
+  assert.equal(dispatches.length, 1);
 });
 
 test("rejection and staleness prevent reusing a proposal", async () => {

@@ -40,8 +40,8 @@ assert.match(js, /validHttpsUrl/, 'HTTPS URL validation missing'); assert.match(
 assert.match(js, /Array\.isArray\(item\.findings\)/, 'nested finding flattening missing');
 assert.match(`${js}\n${renderState}`, /configured !== false/, 'unconfigured provider guard missing');
 assert.match(js, /aria-modal/, 'dialog semantics missing'); assert.match(js, /aria-labelledby/, 'dialog label semantics missing');
-for (const action of ['patch', 'patch-validate', 'patch-reject']) assert.match(js, new RegExp(`['"]${action}['"]`), `missing patch action: ${action}`);
-for (const label of ['Create patch', 'Approve and apply in isolated workspace', 'Reject patch', 'Regenerate patch', 'Copy diff']) assert.match(`${js}\n${patchUi}`, new RegExp(label), `missing patch control: ${label}`);
+ for (const action of ['patch', 'patch-validate', 'patch-validate-status', 'patch-reject']) assert.match(js, new RegExp(`['"]${action}['"]`), `missing patch action: ${action}`);
+for (const label of ['Create patch', 'Approve and queue validation', 'Reject patch', 'Regenerate patch', 'Copy diff']) assert.match(`${js}\n${patchUi}`, new RegExp(label), `missing patch control: ${label}`);
 assert.match(js, /patchIdentity\(proposal, patchId\)/, 'approval must use stored proposal identity');
 assert.match(js, /approved: true/, 'approval signal missing');
 assert.match(js, /state\.drawerEpoch/, 'drawer target guard missing');

@@ -35,6 +35,21 @@ gh workflow run approved-patch-validation.yml --ref master `
 The bundle helper generates a disposable add-file smoke patch. A future broker can produce the same
 bundle shape from an approved Appwrite patch and snapshot without hard-coded repository paths.
 
+## Appwrite broker flow
+
+The deployed `github-dashboard` Function is the broker for dashboard approvals:
+
+1. `patch-validate` verifies the exact stored proposal and current issue/snapshot revisions.
+2. It stores a `validation_queued` transition with a deterministic correlation ID.
+3. It dispatches `repository_dispatch` with event type `approved-patch-validation`.
+4. `patch-validate-status` locates the workflow run by correlation ID and persists bounded queued,
+   running, validated, or failed state back into the same Appwrite patch document.
+5. Repeated approval/status requests do not dispatch a second run for the same proposal identity.
+
+The GitHub App installation used by Backend B must be allowed to create the repository dispatch event
+for the configured repository. The Appwrite Function keeps all GitHub credentials server-side; the
+GitHub-hosted workflow receives only the dynamic bundle and server-owned command.
+
 ## Repository dispatch
 
 The workflow also accepts `repository_dispatch` with event type
