@@ -1,9 +1,17 @@
 name: Hourly Health Check
 
 on:
-  schedule:
-    - cron: '*/30 * * * *'
+  # Schedule is intentionally disabled for now.
+  # Re-enable the block below when you want to run this on a cron again.
+  # schedule:
+  #   - cron: '*/30 * * * *'
+
   workflow_dispatch:
+    inputs:
+      reason:
+        description: 'Optional note for why this manual run is being triggered'
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -20,6 +28,12 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Log trigger context
+        run: |
+          echo "Triggered by: ${{ github.event_name }}"
+          echo "Actor: ${{ github.actor }}"
+          echo "Reason: ${{ inputs.reason || '(none provided)' }}"
 
       - name: Execute Backend B health Function
         env:
